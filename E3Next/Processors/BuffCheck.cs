@@ -662,6 +662,7 @@ namespace E3Core.Processors
 					{
 						if (_spawns.TryByName(name, out var s))
 						{
+							if (spell.ExcludedClasses.Contains(s.ClassShortName)) { continue; }
 							string previousTarget = spell.CastTarget;
 							try
 							{
@@ -685,15 +686,14 @@ namespace E3Core.Processors
 					{
 						if (_spawns.TryByName(name, out var s))
 						{
+							if (spell.ExcludedClasses.Contains(s.ClassShortName)) { continue; }
 
 							Int32 groupMemberIndex = MQ.Query<Int32>($"${{Group.Member[{name}].Index}}");
-
 							if (groupMemberIndex < 0)
 							{
 								//ignore it
 								continue;
 							}
-
 							string previousTarget = spell.CastTarget;
 							try
 							{
@@ -869,7 +869,7 @@ namespace E3Core.Processors
 						//Is the buff still good? if so, skip
 
 						if (Casting.BuffNotReady(spell)) return BuffBots_ReturnType.Continue;
-
+						
 						if (BuffTimerIsGood(spell, s, usePets))
 						{
 							return BuffBots_ReturnType.Continue;
@@ -1345,7 +1345,7 @@ namespace E3Core.Processors
 			//doesn't have the buff, or its expired
 			return false;
 		}
-		private static bool BuffTimerIsGood(Data.Spell spell, Spawn s, bool usePets)
+		public static bool BuffTimerIsGood(Data.Spell spell, Spawn s, bool usePets)
 		{
 			SpellTimer st;
 			if (_buffTimers.TryGetValue(s.ID, out st))
@@ -1917,7 +1917,7 @@ namespace E3Core.Processors
 
 					string manastoneName = "Manastone";
 					Int32 totalClicksToTry = 5;
-					Int32 delayBetweenClicks = 40;
+					Int32 delayBetweenClicks = 20;
 					Int32 maxLoop = 25;
 					if (hasManaStone && (hasSongBuffv1 || hasSongBuffv2 || hasSongBuffv3 || hasSongBuffv4))
 					{
