@@ -1783,7 +1783,7 @@ namespace E3Core.Processors
 				//if a timestamp was set			
 				if(spell.LastCastTimeStamp>0)
 				{
-					if ((Core.StopWatch.ElapsedMilliseconds - spell.LastCastTimeStamp) < spell.RecastDelay)
+					if ((Core.StopWatch.ElapsedMilliseconds - spell.LastCastTimeStamp) < (spell.RecastDelay*1000))
 					{
 						return false;
 					}
@@ -2449,9 +2449,9 @@ namespace E3Core.Processors
 		}
 
 		static Regex _e3buffexistsRegEx = new Regex(@"\$\{E3BuffExists\[([A-Za-z0-9 _]+),([A-Za-z0-9 _]+)\]\}", RegexOptions.Compiled);
-		static Regex _e3BotsRegEx = new Regex(@"\$\{E3Bots\[([A-Za-z0-9 _]+)\]\.([A-Za-z]+)\}", RegexOptions.Compiled);
+		static Regex _e3BotsRegEx = new Regex(@"\$\{E3Bots\[([A-Za-z0-9 _]+)\]\.([A-Za-z0-9 _]+)\}", RegexOptions.Compiled);
 		static Regex _e3BotsBuffsRegEx = new Regex(@"\$\{E3Bots\[([A-Za-z0-9 _]+)\]\.Buffs\[([A-Za-z0-9 _]+)\]\.([A-Za-z0-9]+)\}", RegexOptions.Compiled);
-		static Regex _e3BotsQuery = new Regex(@"\$\{E3Bots\[([A-Za-z0-9 _]+)\]\.Query\[([A-Za-z]+)\]\}", RegexOptions.Compiled);
+		static Regex _e3BotsQuery = new Regex(@"\$\{E3Bots\[([A-Za-z0-9 _]+)\]\.Query\[([A-Za-z0-9 _]+)\]\}", RegexOptions.Compiled);
 		//
 		//to replace the NetBots functionality of query data in the ini files
 		//a bit of regex hell while trying to be somewhat efficent
@@ -2577,6 +2577,12 @@ namespace E3Core.Processors
 						string replacevalue = replaceString;
 						//Rekken
 						string targetname = match.Groups[1].Value;
+
+						if (String.Equals("LOCAL_NAME",targetname,StringComparison.OrdinalIgnoreCase))
+						{
+							targetname = E3.CurrentName;
+						}
+
 						//CurrentHps
 						string query = match.Groups[2].Value;
 
@@ -2585,7 +2591,7 @@ namespace E3Core.Processors
 						{
 							replaceValue = "100";
 						}
-				
+						//string startTime = E3.Bots.Query(user, "${Me.Memory_CSharpStartTime}");
 						string result = E3.Bots.Query(targetname, $"${{Me.{query}}}");
 						if (result != "NULL")
 						{

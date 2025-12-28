@@ -6,14 +6,8 @@ using E3Core.Utility;
 using MonoCore;
 using System;
 using System.Collections.Generic;
-using System.Dynamic;
 using System.Linq;
-using System.Net.Security;
-using System.Net.Sockets;
-using System.Security.Cryptography;
-using System.ServiceModel.Configuration;
-using System.Xml.Linq;
-using static System.Windows.Forms.VisualStyles.VisualStyleElement;
+
 
 namespace E3Core.Processors
 {
@@ -997,15 +991,19 @@ namespace E3Core.Processors
 						}
 
 						bool willStack = true;
-						if (spell.CastType == CastingType.AA)
-						{
-							willStack= MQ.Query<bool>($"${{Me.AltAbility[{spell.CastName}].Spell.WillLand}}");
-						}
-						else
-						{
-							willStack = MQ.Query<bool>($"${{Spell[{spell.SpellName}].WillLand}}");
-						}
 
+						if (!spell.IgnoreStackRules)
+						{
+							if (spell.CastType == CastingType.AA)
+							{
+								willStack = MQ.Query<bool>($"${{Me.AltAbility[{spell.CastName}].Spell.WillLand}}");
+							}
+							else
+							{
+								willStack = MQ.Query<bool>($"${{Spell[{spell.SpellName}].WillLand}}");
+							}
+						}
+			
 						if (willStack && Casting.CheckMana(spell) && Casting.CheckReady(spell))
 						{
 							CastReturn result;
@@ -1081,7 +1079,12 @@ namespace E3Core.Processors
 						{
 							return BuffBots_ReturnType.Continue;
 						}
-						bool willStack = MQ.Query<bool>($"${{Spell[{spell.SpellName}].WillLandPet}}");
+						bool willStack = true;
+						if(!spell.IgnoreStackRules)
+						{
+							willStack=MQ.Query<bool>($"${{Spell[{spell.SpellName}].WillLandPet}}");
+						}
+						
 					recastSpell:
 						if (willStack && Casting.CheckMana(spell) && Casting.CheckReady(spell))
 						{
@@ -1189,7 +1192,12 @@ namespace E3Core.Processors
 
 							Casting.TrueTarget(s.ID);
 							MQ.Delay(2000, "${Target.BuffsPopulated}");
-							bool willStack = MQ.Query<bool>($"${{Spell[{spell.SpellName}].StacksTarget}}");
+							bool willStack = true;
+							if (!spell.IgnoreStackRules)
+							{
+								willStack = MQ.Query<bool>($"${{Spell[{spell.SpellName}].StacksTarget}}");
+							}
+
 							if (!willStack)
 							{
 								UpdateBuffTimers(s.ID, spell, 15000, 15000, true);
@@ -1271,7 +1279,13 @@ namespace E3Core.Processors
 							}
 							if (!isShortDuration || spell.CheckForCollection.Count > 0)
 							{
-								bool willStack = MQ.Query<bool>($"${{Spell[{spell.SpellName}].StacksTarget}}");
+
+								bool willStack = true;
+								if (!spell.IgnoreStackRules)
+								{
+									willStack=MQ.Query<bool>($"${{Spell[{spell.SpellName}].StacksTarget}}");
+
+								}
 								//MQ.Write($"Will stack:{spell.SpellName}:" + willStack);
 								if (!willStack)
 								{

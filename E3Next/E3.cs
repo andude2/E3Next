@@ -6,6 +6,7 @@ using E3Core.Utility;
 using MonoCore;
 using NetMQ;
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -39,7 +40,7 @@ namespace E3Core.Processors
 			if (!IsInit) { Init(); }
 			var sw = new Stopwatch();
 			sw.Start();
-			//auto 5 min gc check
+			//auto X min gc check
 			CheckGC();
 
 			//did someone send us a command? lets process it. 
@@ -323,9 +324,9 @@ namespace E3Core.Processors
 			// Convert to Kilobytes (KB) for easier reading
 			double privateMemoryMb = privateMemoryBytes / 1024f / 1024;
 
-			PubServer.AddTopicMessage("${Me.Memory_CSharp}", $"{privateMemoryMb:N}");
-			PubServer.AddTopicMessage("${Me.Memory_EQPageFile}", $"{eqprocessMemoryMB:N}");
-			PubServer.AddTopicMessage("${Me.Memory_CSharpStartTime}", $"{startTime.ToString()}");
+			PubServer.AddTopicMessage("${Me.Memory_CSharp}", $"{Math.Round(privateMemoryMb,2)}");
+			PubServer.AddTopicMessage("${Me.Memory_EQPageFile}", $"{Math.Round(eqprocessMemoryMB,2)}");
+			PubServer.AddTopicMessage("${Me.Memory_EQStartTime}", $"{startTime.ToString()}");
 
 		}
 		public static void StateUpdates_NetworkDiagnostics()
@@ -374,9 +375,12 @@ namespace E3Core.Processors
 		}
 		public static void StateUpdates_Stats()
 		{
-			PubServer.AddTopicMessage("${Me.PctMana}", MQ.Query<string>("${Me.PctMana}"));
-			PubServer.AddTopicMessage("${Me.PctEndurance}", MQ.Query<string>("${Me.PctEndurance}"));
-			PubServer.AddTopicMessage("${Me.PctHPs}", PctHPs.ToString());
+			string mana = MQ.Query<string>("${Me.PctMana}");
+			PubServer.AddTopicMessage("${Me.PctMana}", mana);
+			string endurance = MQ.Query<string>("${Me.PctEndurance}");
+			PubServer.AddTopicMessage("${Me.PctEndurance}", endurance);
+			string hps = PctHPs.ToString();
+			PubServer.AddTopicMessage("${Me.PctHPs}", hps);
 			PubServer.AddTopicMessage("${Me.CurrentHPs}", MQ.Query<string>("${Me.CurrentHPs}"));
 			PubServer.AddTopicMessage("${Me.CurrentMana}", MQ.Query<string>("${Me.CurrentMana}"));
 			PubServer.AddTopicMessage("${Me.CurrentEndurance}", MQ.Query<string>("${Me.CurrentEndurance}"));
@@ -425,7 +429,7 @@ namespace E3Core.Processors
 					StateUpdates_Stats();
 				}
 				//other stuff not quite so quickly
-				if (e3util.ShouldCheck(ref _nextMiscUpdateCheckTime, _MiscUpdateCheckRate))
+				if (e3util.ShouldCheck(ref _nextMiscUpdateCheckTime, E3.CharacterSettings.CPU_PublishMiscDataInMS))
 				{
 					StateUpdates_Misc();
 				}
@@ -520,12 +524,15 @@ namespace E3Core.Processors
 				e3util.MobMaxDebuffSlots = 200;
 			}
 		}
-        private static void Init()
+		
+		private static void Init()
         {
 
             if (!IsInit)
-            {
-                MQ.ClearCommands();
+			{
+				BufferPool.SetCustomBufferPool(new ArrayBufferPool());
+				//BufferPool.SetBufferManagerBufferPool(1024 * 1024 *10, (1024 *1024));
+				MQ.ClearCommands();
                 AsyncIO.ForceDotNet.Force();
 				if (e3util.IsEQLive())
 				{
@@ -603,17 +610,9 @@ namespace E3Core.Processors
         //test to see if we need to GC every 5 min to maintain proper memory profile
         private static void CheckGC()
         {
-            if(_lastGCCollect==0)
-            {
-                _lastGCCollect = Core.StopWatch.ElapsedMilliseconds;
-            }
-
-            if(Core.StopWatch.ElapsedMilliseconds - _lastGCCollect> 300000)
-            {
-                //GC collect every 5 min
-                GC.Collect();
-                _lastGCCollect = Core.StopWatch.ElapsedMilliseconds;
-            }
+			if (Basics.InCombat()) return;
+			if (!e3util.ShouldCheck(ref _lastGCCollect, 300000)) return;
+			GC.Collect();
         }
 
 		public static void UpdateEzServerAaPoints(int aaPoints)

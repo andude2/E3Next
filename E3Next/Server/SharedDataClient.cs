@@ -21,6 +21,9 @@ using System.Windows.Forms.VisualStyles;
 using System.Xml.Linq;
 using System.Diagnostics;
 using E3Core.Utility;
+using Google.Protobuf.WellKnownTypes;
+using E3Core.UI.Windows.NetworkingStats;
+using System.Runtime.InteropServices;
 
 namespace E3Core.Server
 {
@@ -38,28 +41,8 @@ namespace E3Core.Server
 		public ConcurrentDictionary<string, ConcurrentDictionary<string, ShareDataEntry>> TopicUpdates = new ConcurrentDictionary<string, ConcurrentDictionary<string, ShareDataEntry>>(StringComparer.OrdinalIgnoreCase);
 		public ConcurrentQueue<OnCommandData> CommandQueue = new ConcurrentQueue<OnCommandData>();
 		public ConcurrentQueue<OnCommandData> IMGUICommands = new ConcurrentQueue<OnCommandData>();
-		private const int MaxCommandQueueDepth = 5000;
-		private const int MaxIMGUIQueueDepth = 1000;
-		private const int QueueDropLogIntervalMs = 5000;
-		private const int SharedDataReceiveHighWatermark = 10000;
-		private int _commandQueueDrops = 0;
-		private int _imguiQueueDrops = 0;
-		private long _lastCommandQueueDropLog = 0;
-		private long _lastIMGUIQueueDropLog = 0;
-
-		// Cleanup settings for TopicUpdates dictionary
-		private const int TopicCleanupIntervalMs = 300000; // 5 minutes
-		private const int StaleDataTimeoutMs = 600000; // 10 minutes - consider data stale if no updates
-		private Int64 _nextTopicCleanupMs = 0;
 
 		private static IMQ MQ = E3.MQ;
-		public int CommandQueueCount => CommandQueue.Count;
-		public int IMGUIQueueCount => IMGUICommands.Count;
-		public int CommandQueueDropCount => Volatile.Read(ref _commandQueueDrops);
-		public int IMGUIQueueDropCount => Volatile.Read(ref _imguiQueueDrops);
-		public int ConnectedUsers => UsersConnectedTo.Count;
-		public int TopicUserCount => TopicUpdates.Count;
-		public int TopicEntryCount => GetTopicEntryCount();
 		public class ConnectionInfo
 		{
 			public string User { get; set; }
@@ -542,137 +525,6 @@ namespace E3Core.Server
 				}
 			}
 		}
-
-		private int GetTopicEntryCount()
-		{
-			int total = 0;
-			foreach (var kvp in TopicUpdates)
-			{
-				total += kvp.Value.Count;
-			}
-			return total;
-		}
-
-		private void EnqueueCommand(OnCommandData data)
-		{
-			TryEnqueueBounded(CommandQueue, data, MaxCommandQueueDepth, ref _commandQueueDrops, ref _lastCommandQueueDropLog, "command");
-		}
-
-		private void EnqueueIMGUICommand(OnCommandData data)
-		{
-			TryEnqueueBounded(IMGUICommands, data, MaxIMGUIQueueDepth, ref _imguiQueueDrops, ref _lastIMGUIQueueDropLog, "IMGUI");
-		}
-
-		private void TryEnqueueBounded(ConcurrentQueue<OnCommandData> queue, OnCommandData data, int maxDepth, ref int dropCounter, ref long lastLogTime, string queueName)
-		{
-			if (queue.Count >= maxDepth)
-			{
-				Interlocked.Increment(ref dropCounter);
-				if (ShouldLogQueueDrop(ref lastLogTime))
-				{
-					MQ.WriteDelayed($"SharedDataClient: Dropping {queueName} message ({queue.Count}/{maxDepth}).");
-				}
-				data.Dispose();
-				return;
-			}
-			queue.Enqueue(data);
-		}
-
-		private static bool ShouldLogQueueDrop(ref long lastLogTime)
-		{
-			long now = Core.StopWatch.ElapsedMilliseconds;
-			if (now - lastLogTime > QueueDropLogIntervalMs)
-			{
-				lastLogTime = now;
-				return true;
-			}
-			return false;
-		}
-
-		/// <summary>
-		/// Cleans up stale data from TopicUpdates dictionary.
-		/// Removes characters that haven't sent updates recently and are no longer connected.
-		/// </summary>
-		public void CleanupStaleTopicData()
-		{
-			try
-			{
-				Int64 now = Core.StopWatch.ElapsedMilliseconds;
-				Int64 staleThreshold = now - StaleDataTimeoutMs;
-				var keysToRemove = new List<string>();
-				int totalTopicRemovals = 0;
-
-				// Find characters with stale data
-				foreach (var characterEntry in TopicUpdates)
-				{
-					string characterName = characterEntry.Key;
-					var topics = characterEntry.Value;
-
-					bool isConnected = UsersConnectedTo.ContainsKey(characterName);
-					bool hasRecentData = false;
-					int topicsRemoved = 0;
-
-					foreach (var topicEntry in topics)
-					{
-						if (topicEntry.Value.LastUpdate <= staleThreshold)
-						{
-							if (topics.TryRemove(topicEntry.Key, out _))
-							{
-								topicsRemoved++;
-							}
-						}
-						else
-						{
-							hasRecentData = true;
-						}
-					}
-
-					if (topicsRemoved > 0)
-					{
-						totalTopicRemovals += topicsRemoved;
-					}
-
-					if (!isConnected && !hasRecentData)
-					{
-						keysToRemove.Add(characterName);
-					}
-				}
-
-				// Remove stale character entries
-				int removedCount = 0;
-				foreach (var key in keysToRemove)
-				{
-					if (TopicUpdates.TryRemove(key, out var removed))
-					{
-						removedCount++;
-						MQ.WriteDelayed($"SharedDataClient: Removed stale data for character '{key}' (topics: {removed.Count})");
-					}
-				}
-
-				if (removedCount > 0 || totalTopicRemovals > 0)
-				{
-					MQ.WriteDelayed($"SharedDataClient: Cleanup completed. Removed {removedCount} stale character(s) and {totalTopicRemovals} stale topic(s). Active characters: {TopicUpdates.Count}");
-				}
-			}
-			catch (Exception ex)
-			{
-				MQ.WriteDelayed($"SharedDataClient: Error during cleanup - {ex.Message}");
-			}
-		}
-
-		/// <summary>
-		/// Checks if cleanup should run and executes it if needed
-		/// </summary>
-		private void CheckAndRunTopicCleanup()
-		{
-			Int64 now = Core.StopWatch.ElapsedMilliseconds;
-			if (now >= _nextTopicCleanupMs)
-			{
-				_nextTopicCleanupMs = now + TopicCleanupIntervalMs;
-				CleanupStaleTopicData();
-			}
-		}
-
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
 		public void Process_CheckNewConnections(SubscriberSocket subSocket)
 		{
@@ -752,13 +604,28 @@ namespace E3Core.Server
 			Thread.CurrentThread.CurrentCulture = new CultureInfo("en-US");
 			//timespan we expect to have some type of message
 			TimeSpan recieveTimeout = new TimeSpan(0, 0, 0, 2, 0);
-				using (var subSocket = new SubscriberSocket())
-				{
 
-					subSocket.Options.ReceiveHighWatermark = SharedDataReceiveHighWatermark;
+
+			//create a cache of all topics sent in their binary form so we do not have to allocate strings.
+			ByteArrayComparer byteComparer = new ByteArrayComparer();
+			ByteArrayComparer byteComparerForDataCache = new ByteArrayComparer();
+			
+			//two caches to avoid allocating strings that are super common. 
+			//for topics we capture all topics as there is a limited amount of them
+			Dictionary<byte[], String> topicCache = new Dictionary<byte[], string>(byteComparer);
+			//for data, we use a LRU as there are way more possiblities
+			//LRU<byte[], string> dataCache = new LRU<byte[], string>(byteComparerForDataCache, 1000);
+
+			//splitting up normal subsocket trans data and command data to deal with different buffer requirements
+			using (var subSocket = new SubscriberSocket())
+			{
+				subSocket.Options.ReceiveHighWatermark = 2000;
 				subSocket.Options.TcpKeepalive = true;
 				subSocket.Options.TcpKeepaliveIdle = TimeSpan.FromSeconds(5);
 				subSocket.Options.TcpKeepaliveInterval = TimeSpan.FromSeconds(1);
+				subSocket.Subscribe("${Me."); //all Me stuff should be subscribed to
+				subSocket.Subscribe("${Data."); //all the custom data keys a user can create
+				subSocket.Subscribe("${DataChannel.");
 				subSocket.Subscribe(OnCommandName);
 				subSocket.Subscribe("OnCommand-All");
 				subSocket.Subscribe("OnCommand-AllZone");
@@ -781,39 +648,56 @@ namespace E3Core.Server
 				subSocket.Subscribe("ConfigValueReq-");
 				subSocket.Subscribe("ConfigValueResp-");
 				subSocket.Subscribe("ConfigValueUpdate-");
-				subSocket.Subscribe("${Me."); //all Me stuff should be subscribed to
-				subSocket.Subscribe("${Data."); //all the custom data keys a user can create
-				subSocket.Subscribe("${DataChannel.");
+
+				NetMQ.Msg msg_topic = new NetMQ.Msg();
+				NetMQ.Msg msg_payload = new NetMQ.Msg();
 
 				while (Core.IsProcessing && E3.NetMQ_SharedDataServerThreadRun)
 				{
 					Process_CheckNewConnections(subSocket);
 					Process_CheckConnectionsIfStillValid(subSocket, ref lastConnectionCheck);
-					CheckAndRunTopicCleanup();
-
 					string messageTopicReceived;
-					if (subSocket.TryReceiveFrameString(recieveTimeout, out messageTopicReceived))
+					
+					msg_topic.InitEmpty();
+					msg_payload.InitEmpty();
+
+					try
 					{
-						string messageReceived;
-						string originalMessage;
-						string payloaduser;
-						try
+						if (subSocket.TryReceive(ref msg_topic, recieveTimeout))
 						{
-							messageReceived = subSocket.ReceiveFrameString();
-							originalMessage = messageReceived;
-							messageReceived = originalMessage;
+							//got a topic, need to update collections
+							byteComparer.ByteArrayLength = msg_topic.Size; //this needs to be here to limit the comparer to how deep into the array to look
+							if (!topicCache.ContainsKey(msg_topic.Data))
+							{
+								string topicString = System.Text.Encoding.Default.GetString(msg_topic.Data, 0, msg_topic.Size);
+								byte[] topickey = new byte[msg_topic.Size];
+								Buffer.BlockCopy(msg_topic.Data, 0, topickey, 0, msg_topic.Size);
+								topicCache.Add(topickey, topicString);
+
+							}
+							//get reused string! no allocation needed.
+							messageTopicReceived = topicCache[msg_topic.Data];
+
+							subSocket.Receive(ref msg_payload);
+
+							string messageReceived;
+							messageReceived = System.Text.Encoding.Default.GetString(msg_payload.Data, 0, msg_payload.Size);
+
+							string originalMessage = messageReceived;
+							string payloaduser;
 							Int32 indexOfColon = messageReceived.IndexOf(':');
 							payloaduser = messageReceived.Substring(0, indexOfColon);
 							messageReceived = messageReceived.Substring(indexOfColon + 1, messageReceived.Length - indexOfColon - 1);
 							indexOfColon = messageReceived.IndexOf(':');
 							string payloadServer = messageReceived.Substring(0, indexOfColon);
-							messageReceived = messageReceived.Substring(indexOfColon + 1, messageReceived.Length - indexOfColon - 1);
 
-							//message not from the same server, skip it.
 							if (!String.Equals(payloadServer, E3.ServerName))
 							{
 								continue;
 							}
+
+							messageReceived = messageReceived.Substring(indexOfColon + 1, messageReceived.Length - indexOfColon - 1);
+
 							if (UsersConnectedTo.TryGetValue(payloaduser, out var connectionInfo))
 							{
 								connectionInfo.LastMessageTimeStamp = Core.StopWatch.ElapsedMilliseconds;
@@ -831,7 +715,7 @@ namespace E3Core.Server
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnCommandAll;
 
-								EnqueueCommand(data);
+								CommandQueue.Enqueue(data);
 							}
 							else if (messageTopicReceived == "OnCommand-AllZone")
 							{
@@ -839,7 +723,7 @@ namespace E3Core.Server
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnCommandAllZone;
 
-								EnqueueCommand(data);
+								CommandQueue.Enqueue(data);
 							}
 							else if (messageTopicReceived == "OnCommand-Group")
 							{
@@ -847,7 +731,7 @@ namespace E3Core.Server
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnCommandGroup;
 
-								EnqueueCommand(data);
+								CommandQueue.Enqueue(data);
 							}
 							else if (messageTopicReceived == "OnCommand-GroupZone")
 							{
@@ -855,7 +739,7 @@ namespace E3Core.Server
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnCommandGroupZone;
 
-								EnqueueCommand(data);
+								CommandQueue.Enqueue(data);
 							}
 							else if (messageTopicReceived == "OnCommand-AllExceptMe")
 							{
@@ -863,7 +747,7 @@ namespace E3Core.Server
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnCommandAllExceptMe;
 
-								EnqueueCommand(data);
+								CommandQueue.Enqueue(data);
 							}
 							else if (messageTopicReceived == "OnCommand-AllExceptMeZone")
 							{
@@ -871,7 +755,7 @@ namespace E3Core.Server
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnCommandAllExceptMeZone;
 
-								EnqueueCommand(data);
+								CommandQueue.Enqueue(data);
 							}
 							else if (messageTopicReceived == "OnCommand-GroupAll")
 							{
@@ -879,7 +763,7 @@ namespace E3Core.Server
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnCommandGroupAll;
 
-								EnqueueCommand(data);
+								CommandQueue.Enqueue(data);
 							}
 							else if (messageTopicReceived == "OnCommand-GroupAllZone")
 							{
@@ -887,7 +771,7 @@ namespace E3Core.Server
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnCommandGroupAllZone;
 
-								EnqueueCommand(data);
+								CommandQueue.Enqueue(data);
 							}
 							else if (messageTopicReceived == "OnCommand-Raid")
 							{
@@ -895,28 +779,28 @@ namespace E3Core.Server
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnCommandRaid;
 
-								EnqueueCommand(data);
+								CommandQueue.Enqueue(data);
 							}
 							else if (messageTopicReceived == "OnCommand-RaidNotMe")
 							{
 								var data = OnCommandData.Aquire();
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnCommandRaidNotMe;
-								EnqueueCommand(data);
+								CommandQueue.Enqueue(data);
 							}
 							else if (messageTopicReceived == "OnCommand-RaidZone")
 							{
 								var data = OnCommandData.Aquire();
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnCommandRaidZone;
-								EnqueueCommand(data);
+								CommandQueue.Enqueue(data);
 							}
 							else if (messageTopicReceived == "OnCommand-RaidZoneNotMe")
 							{
 								var data = OnCommandData.Aquire();
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnCommandRaidZoneNotMe;
-								EnqueueCommand(data);
+								CommandQueue.Enqueue(data);
 							}
 							else if (messageTopicReceived == "BroadCastMessage")
 							{
@@ -934,7 +818,7 @@ namespace E3Core.Server
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.BroadCastMessageZone;
 
-								EnqueueCommand(data);
+								CommandQueue.Enqueue(data);
 							}
 							else if (messageTopicReceived.StartsWith("${DataChannel."))
 							{
@@ -946,7 +830,7 @@ namespace E3Core.Server
 										var data = OnCommandData.Aquire();
 										data.Data = messageReceived;
 										data.TypeOfCommand = OnCommandData.CommandType.OnCommandChannel;
-										EnqueueCommand(data);
+										CommandQueue.Enqueue(data);
 									}
 								}
 							}
@@ -958,7 +842,7 @@ namespace E3Core.Server
 								data.Data = messageTopicReceived;
 								data.Data2 = payloaduser;
 								data.TypeOfCommand = OnCommandData.CommandType.OnIMGUICommand_GetCatalogData;
-								EnqueueIMGUICommand(data);
+								IMGUICommands.Enqueue(data);
 							}
 							else if (messageTopicReceived.StartsWith("InvReq-", StringComparison.Ordinal))
 							{
@@ -968,7 +852,7 @@ namespace E3Core.Server
 								data.Data2 = payloaduser;
 								data.Data3 = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnIMGUICommand_GetItemsByType;
-								EnqueueIMGUICommand(data);
+								IMGUICommands.Enqueue(data);
 
 							}
 							else if (messageTopicReceived.StartsWith("ConfigValueReq-", StringComparison.Ordinal))
@@ -978,7 +862,7 @@ namespace E3Core.Server
 								data.Data2 = payloaduser;
 								data.Data3 = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnIMGUICommand_ConfigValueReq;
-								EnqueueIMGUICommand(data);
+								IMGUICommands.Enqueue(data);
 
 							}
 							else if (messageTopicReceived.StartsWith("ConfigValueResp-", StringComparison.Ordinal))
@@ -992,7 +876,7 @@ namespace E3Core.Server
 								data.Data2 = payloaduser;
 								data.Data3 = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnIMGUICommand_ConfigValueUpdate;
-								EnqueueIMGUICommand(data);
+								IMGUICommands.Enqueue(data);
 
 							}
 							else if (messageTopicReceived == OnCommandName)
@@ -1000,26 +884,30 @@ namespace E3Core.Server
 								var data = OnCommandData.Aquire();
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnCommandName;
-								EnqueueCommand(data);
+								CommandQueue.Enqueue(data);
 							}
 							else
 							{
 								ProcessTopicMessage(payloaduser, messageTopicReceived, messageReceived);
 
 							}
-						}
-						catch (Exception ex)
-						{
-							Debug.WriteLine($"Error{ex.Message}");
-							//MQ.WriteDelayed("Error in shared data thread. Message:" + ex.Message + "  stack:" + ex.StackTrace);
+
 						}
 					}
+					catch(Exception ex)
+					{
+						MQ.WriteDelayed("Networking error:"+ex.Message );
+					}
+					finally
+					{
+						msg_payload.Close();
+						msg_topic.Close();
+					}
 				}
-				subSocket.Dispose();
 			}
 			MQ.WriteDelayed($"Shutting down Share Data Thread.");
 		}
-
+		
 		// Helper to scan local inventory for a given item type (e.g., "Food" or "Drink")
 		private static List<string> ScanInventoryByType(string type)
 		{

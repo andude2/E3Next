@@ -58,7 +58,7 @@ namespace E3Core.Server
         RouterSocket _rpcRouter = null;
         Task _serverThread = null;
         NetMQ.Msg routerResponse = new NetMQ.Msg();
-        TimeSpan recieveTimeout = new TimeSpan(0, 0, 0, 0, 1);
+        TimeSpan recieveTimeout = new TimeSpan(0, 0, 0, 2, 0);
         NetMQ.Msg routerMessage = new NetMQ.Msg();
         Int64 counter = 0;
         static TimeSpan timeout = new TimeSpan(0, 0, 0, 5);
@@ -225,16 +225,17 @@ namespace E3Core.Server
             _rpcRouter.Options.ReceiveHighWatermark = RouterHighWatermark;
             _rpcRouter.Bind("tcp://127.0.0.1:" + RouterPort.ToString());
             //_rpcRouter.Bind("tcp://127.0.0.1:12346");
-            routerMessage.InitEmpty();
+          
             try
             {
 
                 while (Core.IsProcessing && E3.NetMQ_RouterServerThradRun)
                 {
-
-                    if (_rpcRouter.TryReceive(ref routerMessage, recieveTimeout))
+					routerMessage.InitEmpty();
+					if (_rpcRouter.TryReceive(ref routerMessage, recieveTimeout))
                     {
                         RouterMessage message = RouterMessage.Aquire();
+                       
                         //first get identit identityJump:
                         unsafe
                         {
@@ -320,11 +321,7 @@ namespace E3Core.Server
                         }
                         //clean up memory after we are done with it
                         routerMessage.Close();
-                        routerMessage.InitEmpty();
                         counter++;
-
-
-
 
                     }
                     //process all the responses that we have to give
