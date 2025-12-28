@@ -266,6 +266,9 @@ namespace MonoCore
 			ImGuiTableColumnFlags_IndentDisable = 1 << 17,  // Ignore current Indent value when entering cell (default for columns > 0). Indentation changes _within_ the cell will still be honored.
 		}
 		public static UITheme _currentTheme = UITheme.DarkTeal;
+		private static volatile bool _imguiContextAvailable;
+		private static long _lastImGuiAvailabilityPoll = long.MinValue;
+		private const long _imguiAvailabilityPollIntervalMs = 1000;
 
         private static readonly int _themePushCount = 27;
 		// Rounding settings
@@ -273,6 +276,65 @@ namespace MonoCore
         public static string _roundingBuf = string.Empty; // UI buffer for editing rounding
 		public static int _roundingVersion = 0; // bump to force InputText to refresh its content
 		public static readonly int _roundingPushCount = 7; // Window, Child, Popup, Frame, Grab, Tab, Scrollbar
+		public static bool IsImGuiAvailable()
+		{
+			if (Core._MQ2MonoVersion < 0.36m)
+			{
+				return false;
+			}
+
+			long now = 0;
+			try
+			{
+				now = Core.StopWatch?.ElapsedMilliseconds ?? 0;
+			}
+			catch
+			{
+				now = 0;
+			}
+
+			if (!_imguiContextAvailable || now - _lastImGuiAvailabilityPoll >= _imguiAvailabilityPollIntervalMs)
+			{
+				bool pluginLoaded = ProbeImGuiPlugin();
+				_imguiContextAvailable = pluginLoaded;
+				_lastImGuiAvailabilityPoll = now;
+			}
+
+			return _imguiContextAvailable;
+		}
+
+		private static bool ProbeImGuiPlugin()
+		{
+			try
+			{
+				string pluginState = Core.mq_ParseTLO("${Plugin[MQ2ImGui].IsLoaded}");
+				if (string.IsNullOrWhiteSpace(pluginState))
+				{
+					return false;
+				}
+
+				if (string.Equals(pluginState, "TRUE", StringComparison.OrdinalIgnoreCase))
+				{
+					return true;
+				}
+
+				if (string.Equals(pluginState, "FALSE", StringComparison.OrdinalIgnoreCase))
+				{
+					return false;
+				}
+
+				if (int.TryParse(pluginState, out int numericState))
+				{
+					return numericState != 0;
+				}
+			}
+			catch
+			{
+				return false;
+			}
+
+			return false;
+		}
 
 
 
@@ -307,7 +369,7 @@ namespace MonoCore
 		[MethodImpl(MethodImplOptions.InternalCall)]
 		public extern static bool imgui_Checkbox_Get(string id);
 		[MethodImpl(MethodImplOptions.InternalCall)]
-		public extern static bool imgui_Checkbox_Clear(string id);
+		public extern static void imgui_Checkbox_Clear(string id);
 
 
 		[MethodImpl(MethodImplOptions.InternalCall)]
@@ -395,14 +457,14 @@ namespace MonoCore
 		public extern static bool imgui_TableNextColumn();
 
 		[MethodImpl(MethodImplOptions.InternalCall)]
-		public extern static bool imgui_TableSetColumnIndex(int index);
+		public extern static void imgui_TableSetColumnIndex(int index);
 
 		[MethodImpl(MethodImplOptions.InternalCall)]
-		public extern static bool imgui_PushID(int id);
+		public extern static void imgui_PushID(int id);
 
 
 		[MethodImpl(MethodImplOptions.InternalCall)]
-		public extern static bool imgui_PopID();
+		public extern static void imgui_PopID();
 
 		[MethodImpl(MethodImplOptions.InternalCall)]
 		public extern static void imgui_TextColored(float r, float g, float b, float a, string text);
@@ -511,17 +573,7 @@ namespace MonoCore
 		public extern static void imgui_SetNextWindowFocus();
 
 		[MethodImpl(MethodImplOptions.InternalCall)]
-		public extern static void imgui_TableNextRowEx(int row_flags, float min_row_height);
-
-		[MethodImpl(MethodImplOptions.InternalCall)]
-		public extern static float imgui_GetCursorPosX();
-		[MethodImpl(MethodImplOptions.InternalCall)]
-		public extern static void imgui_SetCursorPosY(float y);
-		[MethodImpl(MethodImplOptions.InternalCall)]
-		public extern static void imgui_SetCursorPosX(float x);
-
-		[MethodImpl(MethodImplOptions.InternalCall)]
-	public extern static void imgui_SetNextWindowSizeWithCond(float width, float height, int cond);
+		public extern static void imgui_SetNextWindowSizeWithCond(float width, float height, int cond);
 
 	[MethodImpl(MethodImplOptions.InternalCall)]
 	public extern static void imgui_SetNextWindowSizeConstraints(float min_width, float min_height,float max_width,float max_height);
@@ -818,13 +870,14 @@ namespace MonoCore
                     return "Theme description not available.";
             }
         }
-        /// <summary>
-        /// Primary C++ entry point, calls the Invoke on all registered windows.
-        /// </summary>
-        public static void OnUpdateImGui()
-        {
-            if(Core.IsProcessing)
-            {
+		/// <summary>
+		/// Primary C++ entry point, calls the Invoke on all registered windows.
+		/// </summary>
+		public static void OnUpdateImGui()
+		{
+			_imguiContextAvailable = true;
+			if(Core.IsProcessing)
+			{
 				foreach (var pair in RegisteredWindows)
 				{
 					pair.Value.Invoke();

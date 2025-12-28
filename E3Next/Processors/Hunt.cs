@@ -835,19 +835,14 @@ namespace E3Core.Processors
                                     try
                                     {
                                         // Query the shared-data topic directly
-                                        string botSmartLootState1 = E3.Bots.Query(botName, "${Data.Hunt.SmartLootState}");
-                                        // Backward-compat fallbacks if someone publishes a different key
-                                        string botSmartLootState2 = E3.Bots.Query(botName, "${Data.SmartLootState}");
-                                        string botSmartLootState3 = E3.Bots.Query(botName, "${Data.Hunt_SmartLootState}");
+                                        string botSmartLootState = E3.Bots.Query(botName, "${Data.Hunt.SmartLootState}");
                                         
                                         // Also show derived active and mode if available
                                         string botSmartLootActive = E3.Bots.Query(botName, "${Data.Hunt.SmartLootActive}");
                                         string botSmartLootMode = E3.Bots.Query(botName, "${Data.Hunt.SmartLootMode}");
 
                                         MQ.Write($"  {botName}:");
-                                        MQ.Write($"    Data.Hunt.SmartLootState: {botSmartLootState1 ?? "NULL"}");
-                                        MQ.Write($"    Data.SmartLootState: {botSmartLootState2 ?? "NULL"}");
-                                        MQ.Write($"    Data.Hunt_SmartLootState: {botSmartLootState3 ?? "NULL"}");
+                                        MQ.Write($"    Data.Hunt.SmartLootState: {botSmartLootState ?? "NULL"}");
                                         MQ.Write($"    Data.Hunt.SmartLootActive: {botSmartLootActive ?? "NULL"}");
                                         MQ.Write($"    Data.Hunt.SmartLootMode: {botSmartLootMode ?? "NULL"}");
                                     }
@@ -3064,10 +3059,8 @@ namespace E3Core.Processors
                     SmartLootState = "NotLoaded";
                     SmartLootMode = "Disabled";
                     SmartLootActive = false;
-                    // Publish for peers (support multiple legacy keys)
+                    // Publish for peers
                     E3Core.Server.PubServer.AddTopicMessage("${Data.Hunt.SmartLootState}", SmartLootState);
-                    E3Core.Server.PubServer.AddTopicMessage("${Data.SmartLootState}", SmartLootState);
-                    E3Core.Server.PubServer.AddTopicMessage("${Data.Hunt_SmartLootState}", SmartLootState);
                     E3Core.Server.PubServer.AddTopicMessage("${Data.Hunt.SmartLootActive}", SmartLootActive ? "1" : "0");
                     E3Core.Server.PubServer.AddTopicMessage("${Data.Hunt.SmartLootMode}", SmartLootMode);
                     return;
@@ -3090,10 +3083,8 @@ namespace E3Core.Processors
                     (!string.IsNullOrEmpty(SmartLootState) && !SmartLootState.Equals("Idle", StringComparison.OrdinalIgnoreCase))
                     || isProcessing || needsDecision || lootWindowOpen;
 
-                // Publish for peers (support multiple legacy keys)
+                // Publish for peers
                 E3Core.Server.PubServer.AddTopicMessage("${Data.Hunt.SmartLootState}", SmartLootState);
-                E3Core.Server.PubServer.AddTopicMessage("${Data.SmartLootState}", SmartLootState);
-                E3Core.Server.PubServer.AddTopicMessage("${Data.Hunt_SmartLootState}", SmartLootState);
                 E3Core.Server.PubServer.AddTopicMessage("${Data.Hunt.SmartLootActive}", SmartLootActive ? "1" : "0");
                 E3Core.Server.PubServer.AddTopicMessage("${Data.Hunt.SmartLootMode}", SmartLootMode);
             }
@@ -3103,10 +3094,8 @@ namespace E3Core.Processors
                 SmartLootState = "Error";
                 SmartLootMode = "Disabled";
                 SmartLootActive = false;
-                // Publish error state for visibility (support multiple legacy keys)
+                // Publish error state for visibility
                 E3Core.Server.PubServer.AddTopicMessage("${Data.Hunt.SmartLootState}", SmartLootState);
-                E3Core.Server.PubServer.AddTopicMessage("${Data.SmartLootState}", SmartLootState);
-                E3Core.Server.PubServer.AddTopicMessage("${Data.Hunt_SmartLootState}", SmartLootState);
                 E3Core.Server.PubServer.AddTopicMessage("${Data.Hunt.SmartLootActive}", SmartLootActive ? "1" : "0");
                 E3Core.Server.PubServer.AddTopicMessage("${Data.Hunt.SmartLootMode}", SmartLootMode);
             }

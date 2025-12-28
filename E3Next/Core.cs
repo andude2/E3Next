@@ -135,11 +135,19 @@ namespace MonoCore
                 Core.DelayTime = value;
                 Core.CurrentDelay = value;//tell the C++ thread to send out a delay update
             }
+            if (E3.IsInit)
+            {
+                E3.ProcessExternalCommands();
+            }
             //lets tell core that it can continue
             Core.CoreResetEvent.Set();
             //we are now going to wait on the core
             MainProcessor.ProcessResetEvent.Wait();
             MainProcessor.ProcessResetEvent.Reset();
+            if (E3.IsInit)
+            {
+                E3.ProcessExternalCommands();
+            }
         }
 
     }
@@ -1697,6 +1705,7 @@ namespace MonoCore
             if (E3.IsInit && !E3.InStateUpdate)
             {
                 E3.StateUpdates();
+                E3.ProcessExternalCommands();
             }
             //lets tell core that it can continue
             Core.CoreResetEvent.Set();
@@ -1714,6 +1723,7 @@ namespace MonoCore
             if (E3.IsInit && !E3.InStateUpdate)
             {
                 E3.StateUpdates();
+                E3.ProcessExternalCommands();
 
             }
             SinceLastDelay = Core.StopWatch.ElapsedMilliseconds;
@@ -2061,12 +2071,26 @@ namespace MonoCore
         {
             private static readonly Stack<T> pool = new Stack<T>();
 
-            public static void Push(T obj)
+            private static void PushInternal(T obj, int? maxCount)
             {
                 lock (pool)
                 {
+                    if (maxCount.HasValue && pool.Count >= maxCount.Value)
+                    {
+                        return;
+                    }
                     pool.Push(obj);
                 }
+            }
+
+            public static void Push(T obj)
+            {
+                PushInternal(obj, null);
+            }
+
+            public static void Push(T obj, int maxCount)
+            {
+                PushInternal(obj, maxCount);
             }
 
             public static bool TryPop(out T obj)
@@ -2087,6 +2111,11 @@ namespace MonoCore
         public static void Push<T>(T obj)
         {
             Pool<T>.Push(obj);
+        }
+
+        public static void Push<T>(T obj, int maxCount)
+        {
+            Pool<T>.Push(obj, maxCount);
         }
 
         public static bool TryPop<T>(out T obj)

@@ -38,6 +38,14 @@ namespace E3Core.Server
 		public ConcurrentDictionary<string, ConcurrentDictionary<string, ShareDataEntry>> TopicUpdates = new ConcurrentDictionary<string, ConcurrentDictionary<string, ShareDataEntry>>(StringComparer.OrdinalIgnoreCase);
 		public ConcurrentQueue<OnCommandData> CommandQueue = new ConcurrentQueue<OnCommandData>();
 		public ConcurrentQueue<OnCommandData> IMGUICommands = new ConcurrentQueue<OnCommandData>();
+		private const int MaxCommandQueueDepth = 5000;
+		private const int MaxIMGUIQueueDepth = 1000;
+		private const int QueueDropLogIntervalMs = 5000;
+		private const int SharedDataReceiveHighWatermark = 10000;
+		private int _commandQueueDrops = 0;
+		private int _imguiQueueDrops = 0;
+		private long _lastCommandQueueDropLog = 0;
+		private long _lastIMGUIQueueDropLog = 0;
 
 		// Cleanup settings for TopicUpdates dictionary
 		private const int TopicCleanupIntervalMs = 300000; // 5 minutes
@@ -45,6 +53,13 @@ namespace E3Core.Server
 		private Int64 _nextTopicCleanupMs = 0;
 
 		private static IMQ MQ = E3.MQ;
+		public int CommandQueueCount => CommandQueue.Count;
+		public int IMGUIQueueCount => IMGUICommands.Count;
+		public int CommandQueueDropCount => Volatile.Read(ref _commandQueueDrops);
+		public int IMGUIQueueDropCount => Volatile.Read(ref _imguiQueueDrops);
+		public int ConnectedUsers => UsersConnectedTo.Count;
+		public int TopicUserCount => TopicUpdates.Count;
+		public int TopicEntryCount => GetTopicEntryCount();
 		public class ConnectionInfo
 		{
 			public string User { get; set; }
@@ -528,6 +543,52 @@ namespace E3Core.Server
 			}
 		}
 
+		private int GetTopicEntryCount()
+		{
+			int total = 0;
+			foreach (var kvp in TopicUpdates)
+			{
+				total += kvp.Value.Count;
+			}
+			return total;
+		}
+
+		private void EnqueueCommand(OnCommandData data)
+		{
+			TryEnqueueBounded(CommandQueue, data, MaxCommandQueueDepth, ref _commandQueueDrops, ref _lastCommandQueueDropLog, "command");
+		}
+
+		private void EnqueueIMGUICommand(OnCommandData data)
+		{
+			TryEnqueueBounded(IMGUICommands, data, MaxIMGUIQueueDepth, ref _imguiQueueDrops, ref _lastIMGUIQueueDropLog, "IMGUI");
+		}
+
+		private void TryEnqueueBounded(ConcurrentQueue<OnCommandData> queue, OnCommandData data, int maxDepth, ref int dropCounter, ref long lastLogTime, string queueName)
+		{
+			if (queue.Count >= maxDepth)
+			{
+				Interlocked.Increment(ref dropCounter);
+				if (ShouldLogQueueDrop(ref lastLogTime))
+				{
+					MQ.WriteDelayed($"SharedDataClient: Dropping {queueName} message ({queue.Count}/{maxDepth}).");
+				}
+				data.Dispose();
+				return;
+			}
+			queue.Enqueue(data);
+		}
+
+		private static bool ShouldLogQueueDrop(ref long lastLogTime)
+		{
+			long now = Core.StopWatch.ElapsedMilliseconds;
+			if (now - lastLogTime > QueueDropLogIntervalMs)
+			{
+				lastLogTime = now;
+				return true;
+			}
+			return false;
+		}
+
 		/// <summary>
 		/// Cleans up stale data from TopicUpdates dictionary.
 		/// Removes characters that haven't sent updates recently and are no longer connected.
@@ -539,6 +600,7 @@ namespace E3Core.Server
 				Int64 now = Core.StopWatch.ElapsedMilliseconds;
 				Int64 staleThreshold = now - StaleDataTimeoutMs;
 				var keysToRemove = new List<string>();
+				int totalTopicRemovals = 0;
 
 				// Find characters with stale data
 				foreach (var characterEntry in TopicUpdates)
@@ -546,28 +608,33 @@ namespace E3Core.Server
 					string characterName = characterEntry.Key;
 					var topics = characterEntry.Value;
 
-					// Check if this character is still connected
 					bool isConnected = UsersConnectedTo.ContainsKey(characterName);
+					bool hasRecentData = false;
+					int topicsRemoved = 0;
 
-					if (!isConnected)
+					foreach (var topicEntry in topics)
 					{
-						// Character is not connected, check if data is stale
-						bool hasRecentData = false;
-
-						foreach (var topicEntry in topics.Values)
+						if (topicEntry.Value.LastUpdate <= staleThreshold)
 						{
-							if (topicEntry.LastUpdate > staleThreshold)
+							if (topics.TryRemove(topicEntry.Key, out _))
 							{
-								hasRecentData = true;
-								break;
+								topicsRemoved++;
 							}
 						}
-
-						// If no recent data, mark for removal
-						if (!hasRecentData)
+						else
 						{
-							keysToRemove.Add(characterName);
+							hasRecentData = true;
 						}
+					}
+
+					if (topicsRemoved > 0)
+					{
+						totalTopicRemovals += topicsRemoved;
+					}
+
+					if (!isConnected && !hasRecentData)
+					{
+						keysToRemove.Add(characterName);
 					}
 				}
 
@@ -582,9 +649,9 @@ namespace E3Core.Server
 					}
 				}
 
-				if (removedCount > 0)
+				if (removedCount > 0 || totalTopicRemovals > 0)
 				{
-					MQ.WriteDelayed($"SharedDataClient: Cleanup completed. Removed {removedCount} stale character(s). Active characters: {TopicUpdates.Count}");
+					MQ.WriteDelayed($"SharedDataClient: Cleanup completed. Removed {removedCount} stale character(s) and {totalTopicRemovals} stale topic(s). Active characters: {TopicUpdates.Count}");
 				}
 			}
 			catch (Exception ex)
@@ -685,10 +752,10 @@ namespace E3Core.Server
 			Thread.CurrentThread.CurrentCulture = new CultureInfo("en-US");
 			//timespan we expect to have some type of message
 			TimeSpan recieveTimeout = new TimeSpan(0, 0, 0, 2, 0);
-			using (var subSocket = new SubscriberSocket())
-			{
+				using (var subSocket = new SubscriberSocket())
+				{
 
-				subSocket.Options.ReceiveHighWatermark = 100000;
+					subSocket.Options.ReceiveHighWatermark = SharedDataReceiveHighWatermark;
 				subSocket.Options.TcpKeepalive = true;
 				subSocket.Options.TcpKeepaliveIdle = TimeSpan.FromSeconds(5);
 				subSocket.Options.TcpKeepaliveInterval = TimeSpan.FromSeconds(1);
@@ -764,7 +831,7 @@ namespace E3Core.Server
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnCommandAll;
 
-								CommandQueue.Enqueue(data);
+								EnqueueCommand(data);
 							}
 							else if (messageTopicReceived == "OnCommand-AllZone")
 							{
@@ -772,7 +839,7 @@ namespace E3Core.Server
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnCommandAllZone;
 
-								CommandQueue.Enqueue(data);
+								EnqueueCommand(data);
 							}
 							else if (messageTopicReceived == "OnCommand-Group")
 							{
@@ -780,7 +847,7 @@ namespace E3Core.Server
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnCommandGroup;
 
-								CommandQueue.Enqueue(data);
+								EnqueueCommand(data);
 							}
 							else if (messageTopicReceived == "OnCommand-GroupZone")
 							{
@@ -788,7 +855,7 @@ namespace E3Core.Server
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnCommandGroupZone;
 
-								CommandQueue.Enqueue(data);
+								EnqueueCommand(data);
 							}
 							else if (messageTopicReceived == "OnCommand-AllExceptMe")
 							{
@@ -796,7 +863,7 @@ namespace E3Core.Server
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnCommandAllExceptMe;
 
-								CommandQueue.Enqueue(data);
+								EnqueueCommand(data);
 							}
 							else if (messageTopicReceived == "OnCommand-AllExceptMeZone")
 							{
@@ -804,7 +871,7 @@ namespace E3Core.Server
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnCommandAllExceptMeZone;
 
-								CommandQueue.Enqueue(data);
+								EnqueueCommand(data);
 							}
 							else if (messageTopicReceived == "OnCommand-GroupAll")
 							{
@@ -812,7 +879,7 @@ namespace E3Core.Server
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnCommandGroupAll;
 
-								CommandQueue.Enqueue(data);
+								EnqueueCommand(data);
 							}
 							else if (messageTopicReceived == "OnCommand-GroupAllZone")
 							{
@@ -820,7 +887,7 @@ namespace E3Core.Server
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnCommandGroupAllZone;
 
-								CommandQueue.Enqueue(data);
+								EnqueueCommand(data);
 							}
 							else if (messageTopicReceived == "OnCommand-Raid")
 							{
@@ -828,28 +895,28 @@ namespace E3Core.Server
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnCommandRaid;
 
-								CommandQueue.Enqueue(data);
+								EnqueueCommand(data);
 							}
 							else if (messageTopicReceived == "OnCommand-RaidNotMe")
 							{
 								var data = OnCommandData.Aquire();
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnCommandRaidNotMe;
-								CommandQueue.Enqueue(data);
+								EnqueueCommand(data);
 							}
 							else if (messageTopicReceived == "OnCommand-RaidZone")
 							{
 								var data = OnCommandData.Aquire();
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnCommandRaidZone;
-								CommandQueue.Enqueue(data);
+								EnqueueCommand(data);
 							}
 							else if (messageTopicReceived == "OnCommand-RaidZoneNotMe")
 							{
 								var data = OnCommandData.Aquire();
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnCommandRaidZoneNotMe;
-								CommandQueue.Enqueue(data);
+								EnqueueCommand(data);
 							}
 							else if (messageTopicReceived == "BroadCastMessage")
 							{
@@ -867,7 +934,7 @@ namespace E3Core.Server
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.BroadCastMessageZone;
 
-								CommandQueue.Enqueue(data);
+								EnqueueCommand(data);
 							}
 							else if (messageTopicReceived.StartsWith("${DataChannel."))
 							{
@@ -879,7 +946,7 @@ namespace E3Core.Server
 										var data = OnCommandData.Aquire();
 										data.Data = messageReceived;
 										data.TypeOfCommand = OnCommandData.CommandType.OnCommandChannel;
-										CommandQueue.Enqueue(data);
+										EnqueueCommand(data);
 									}
 								}
 							}
@@ -891,7 +958,7 @@ namespace E3Core.Server
 								data.Data = messageTopicReceived;
 								data.Data2 = payloaduser;
 								data.TypeOfCommand = OnCommandData.CommandType.OnIMGUICommand_GetCatalogData;
-								IMGUICommands.Enqueue(data);
+								EnqueueIMGUICommand(data);
 							}
 							else if (messageTopicReceived.StartsWith("InvReq-", StringComparison.Ordinal))
 							{
@@ -901,7 +968,7 @@ namespace E3Core.Server
 								data.Data2 = payloaduser;
 								data.Data3 = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnIMGUICommand_GetItemsByType;
-								IMGUICommands.Enqueue(data);
+								EnqueueIMGUICommand(data);
 
 							}
 							else if (messageTopicReceived.StartsWith("ConfigValueReq-", StringComparison.Ordinal))
@@ -911,7 +978,7 @@ namespace E3Core.Server
 								data.Data2 = payloaduser;
 								data.Data3 = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnIMGUICommand_ConfigValueReq;
-								IMGUICommands.Enqueue(data);
+								EnqueueIMGUICommand(data);
 
 							}
 							else if (messageTopicReceived.StartsWith("ConfigValueResp-", StringComparison.Ordinal))
@@ -925,7 +992,7 @@ namespace E3Core.Server
 								data.Data2 = payloaduser;
 								data.Data3 = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnIMGUICommand_ConfigValueUpdate;
-								IMGUICommands.Enqueue(data);
+								EnqueueIMGUICommand(data);
 
 							}
 							else if (messageTopicReceived == OnCommandName)
@@ -933,7 +1000,7 @@ namespace E3Core.Server
 								var data = OnCommandData.Aquire();
 								data.Data = messageReceived;
 								data.TypeOfCommand = OnCommandData.CommandType.OnCommandName;
-								CommandQueue.Enqueue(data);
+								EnqueueCommand(data);
 							}
 							else
 							{

@@ -302,6 +302,8 @@ namespace E3Core.Processors
 		private static Int64 _nextMemoryUpdateCheckTime = 0;
 		private static Int64 _nextMemoryUpdateCheckRate = 2000;
 		private static Int64 _MiscUpdateCheckRate = 100;
+		private static Int64 _nextNetworkDiagUpdateTime = 0;
+		private static Int64 _networkDiagUpdateRate = 2000;
 
 	
 		//qick hack to prevent calling state update... while in state updates. 
@@ -325,6 +327,26 @@ namespace E3Core.Processors
 			PubServer.AddTopicMessage("${Me.Memory_EQPageFile}", $"{eqprocessMemoryMB:N}");
 			PubServer.AddTopicMessage("${Me.Memory_CSharpStartTime}", $"{startTime.ToString()}");
 
+		}
+		public static void StateUpdates_NetworkDiagnostics()
+		{
+			var invariant = CultureInfo.InvariantCulture;
+			var sharedClient = NetMQServer.SharedDataClient;
+			if (sharedClient != null)
+			{
+				PubServer.AddTopicMessage("${Me.Queue_CommandQueue}", sharedClient.CommandQueueCount.ToString(invariant));
+				PubServer.AddTopicMessage("${Me.Queue_IMGUICommands}", sharedClient.IMGUIQueueCount.ToString(invariant));
+				PubServer.AddTopicMessage("${Me.QueueDrops_CommandQueue}", sharedClient.CommandQueueDropCount.ToString(invariant));
+				PubServer.AddTopicMessage("${Me.QueueDrops_IMGUICommands}", sharedClient.IMGUIQueueDropCount.ToString(invariant));
+				PubServer.AddTopicMessage("${Me.SharedDataConnectedUsers}", sharedClient.ConnectedUsers.ToString(invariant));
+				PubServer.AddTopicMessage("${Me.SharedDataTopicUsers}", sharedClient.TopicUserCount.ToString(invariant));
+				PubServer.AddTopicMessage("${Me.SharedDataTopicEntries}", sharedClient.TopicEntryCount.ToString(invariant));
+			}
+			PubServer.AddTopicMessage("${Me.Queue_TloRequests}", RouterServer.OutstandingRequestCount.ToString(invariant));
+			PubServer.AddTopicMessage("${Me.Queue_TloResponses}", RouterServer.OutstandingResponseCount.ToString(invariant));
+			PubServer.AddTopicMessage("${Me.QueueDrops_TloRequests}", RouterServer.DroppedRequestCount.ToString(invariant));
+			PubServer.AddTopicMessage("${Me.Queue_PubTopics}", PubServer.TopicMessageQueueCount.ToString(invariant));
+			PubServer.AddTopicMessage("${Me.QueueDrops_PubTopics}", PubServer.TopicMessageDropCount.ToString(invariant));
 		}
 
 		public static void StateUpdates_Counters()
@@ -416,6 +438,10 @@ namespace E3Core.Processors
 				if (e3util.ShouldCheck(ref _nextMemoryUpdateCheckTime, _nextMemoryUpdateCheckRate))
 				{
 					StateUpdates_Memory();
+				}
+				if (e3util.ShouldCheck(ref _nextNetworkDiagUpdateTime, _networkDiagUpdateRate))
+				{
+					StateUpdates_NetworkDiagnostics();
 				}
 				//not horribly important stuff, can just be sent out whever, currently once per second
 				if (e3util.ShouldCheck(ref _nextSlowUpdateCheckTime, E3.CharacterSettings.CPU_PublishSlowDataInMS))

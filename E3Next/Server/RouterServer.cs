@@ -25,6 +25,7 @@ namespace E3Core.Server
         public byte[] payload = new byte[1024 * 1024];
         public Int32 payloadLength = 0;
         public IEnumerable<Spawn> spawns;
+        private const int PoolLimit = 1024;
         public static RouterMessage Aquire()
         {
             RouterMessage obj;
@@ -40,7 +41,7 @@ namespace E3Core.Server
             payloadLength = 0;
             identiyLength = 0;
             spawns = null;
-            StaticObjectPool.Push<RouterMessage>(this);
+            StaticObjectPool.Push<RouterMessage>(this, PoolLimit);
         }
         ~RouterMessage()
         {
@@ -61,12 +62,21 @@ namespace E3Core.Server
         NetMQ.Msg routerMessage = new NetMQ.Msg();
         Int64 counter = 0;
         static TimeSpan timeout = new TimeSpan(0, 0, 0, 5);
+        private const int MaxOutstandingTloRequests = 1024;
+        private const int RouterHighWatermark = 5000;
+        private const int RouterDropLogIntervalMs = 5000;
+        private static int _routerDropCount = 0;
+        private static long _lastRouterDropLog;
 
         public static ConcurrentQueue<RouterMessage> _tloRequests = new ConcurrentQueue<RouterMessage>();
         public static ConcurrentQueue<RouterMessage> _tloResposne = new ConcurrentQueue<RouterMessage>();
-        
+
 
         public Int32 RouterPort = 0;
+
+        public static int OutstandingRequestCount => _tloRequests.Count;
+        public static int OutstandingResponseCount => _tloResposne.Count;
+        public static int DroppedRequestCount => Volatile.Read(ref _routerDropCount);
 
         public void Start(Int32 port)
         {
@@ -211,8 +221,8 @@ namespace E3Core.Server
 
 			AsyncIO.ForceDotNet.Force();
             _rpcRouter = new RouterSocket();
-            _rpcRouter.Options.SendHighWatermark = 50000;
-            _rpcRouter.Options.ReceiveHighWatermark = 50000;
+            _rpcRouter.Options.SendHighWatermark = RouterHighWatermark;
+            _rpcRouter.Options.ReceiveHighWatermark = RouterHighWatermark;
             _rpcRouter.Bind("tcp://127.0.0.1:" + RouterPort.ToString());
             //_rpcRouter.Bind("tcp://127.0.0.1:12346");
             routerMessage.InitEmpty();
@@ -278,7 +288,19 @@ namespace E3Core.Server
 
                         if (message.commandType == 1)
                         {
-                            _tloRequests.Enqueue(message);
+                            if (_tloRequests.Count >= MaxOutstandingTloRequests)
+                            {
+                                Interlocked.Increment(ref _routerDropCount);
+                                message.Dispose();
+                                if (ShouldLogRouterDrop())
+                                {
+                                    MQ.WriteDelayed($"RouterServer: Dropping router request ({_tloRequests.Count}/{MaxOutstandingTloRequests}).");
+                                }
+                            }
+                            else
+                            {
+                                _tloRequests.Enqueue(message);
+                            }
                         }
                         else
                         {
@@ -345,6 +367,17 @@ namespace E3Core.Server
             _rpcRouter.Dispose();
             MQ.WriteDelayed("Shutting down RouterServer Thread.");
 
+        }
+
+        private static bool ShouldLogRouterDrop()
+        {
+            long now = Core.StopWatch.ElapsedMilliseconds;
+            if (now - _lastRouterDropLog > RouterDropLogIntervalMs)
+            {
+                _lastRouterDropLog = now;
+                return true;
+            }
+            return false;
         }
 
     }
