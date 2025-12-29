@@ -6,6 +6,8 @@ using static MonoCore.E3ImGUI;
 using E3Core.Classes;
 using E3Core.Processors;
 using E3Core.Utility;
+using E3Core.Server;
+using System.Text;
 
 namespace E3Core.UI.Windows.MemStats
 {
@@ -69,7 +71,34 @@ namespace E3Core.UI.Windows.MemStats
 
 				
 			}, "toggle memory stats window");
+			EventProcessor.RegisterCommand("/e3debug_memory_counts", (x) =>
+			{
 
+					//events
+				E3.Bots.Broadcast($"Events: MQ:{EventProcessor._mqEventProcessingQueue.Count}, MQC:{EventProcessor._mqCommandProcessingQueue.Count}, E:{EventProcessor._eventProcessingQueue.Count}" +
+				$", FREX:{EventProcessor._filterRegexes.Count}, EL:{EventProcessor.EventList.Count}, CLQ:{EventProcessor.CommandListQueue.Count}");
+				E3.Bots.Broadcast($"PubSub: T:{PubServer._topicMessages.Count}, IM:{PubServer.IncomingChatMessages.Count}, CTS:{PubServer.CommandsToSend.Count}, MQCM:{PubServer.MQChatMessages.Count}");
+				E3.Bots.Broadcast($"Router: TLORequest:{RouterServer._tloRequests.Count}, TLOReponse:{RouterServer._tloResposne.Count}");
+				E3.Bots.Broadcast($"BegForBuffs: Queued Buffs:{BegForBuffs._queuedBuffs.Count}");
+				//NetMQServer.SharedDataClient.TopicUpdates
+				E3.Bots.Broadcast($"Shared Data: UTopics:{NetMQServer.SharedDataClient.TopicUpdates.Count}");
+
+				StringBuilder sb = new StringBuilder();
+
+				bool firstAppend = true;
+				foreach(var pair in NetMQServer.SharedDataClient.TopicUpdates)
+				{
+
+					if (!firstAppend) sb.Append(",");
+					if(firstAppend) firstAppend=false;
+					sb.Append($"{pair.Key}:{pair.Value.Count}");
+					
+				}
+				E3.Bots.Broadcast($"Shared Data user topic Count: UTopics:{NetMQServer.SharedDataClient.TopicUpdates.Count}, Users: {sb.ToString()}");
+
+
+
+			}, "Output collection sizes");
 
 		}
 		public static void ToggleWindow()
@@ -150,7 +179,7 @@ namespace E3Core.UI.Windows.MemStats
 											  ImGuiTableFlags.ImGuiTableFlags_BordersInner |
 											  ImGuiTableFlags.ImGuiTableFlags_ScrollY| ImGuiTableFlags.ImGuiTableFlags_Resizable);
 
-						const float summaryLegendHeight = 60f; // Enough room for summary metrics plus multi-line legend
+						const float summaryLegendHeight = 190f; // Enough room for summary metrics plus multi-line legend
 						float tableHeight = Math.Max(150f, imgui_GetContentRegionAvailY() - summaryLegendHeight);
 
 						if (table.BeginTable("MemoryStatsTable", 4, tableFlags, 0f, tableHeight))
@@ -235,13 +264,14 @@ namespace E3Core.UI.Windows.MemStats
 
 		private static void RenderSeverityLegend()
 		{
-			if (imgui_CollapsingHeader("EQ Commit severity legend:", 0))
+			if(imgui_CollapsingHeader("EQ Commit severity legend:",0))
 			{
 				foreach (var band in _eqCommitSeverityBands)
 				{
 					imgui_TextColored(band.R, band.G, band.B, 1.0f, $"  {band.Label}");
 				}
 			}
+		
 		}
 		public class MemoryStats
 		{

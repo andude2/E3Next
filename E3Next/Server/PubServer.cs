@@ -24,15 +24,14 @@ namespace E3Core.Server
     public class PubServer
     {
         private static IMQ MQ = E3.MQ;
-		class topicMessagePair:IDisposable
-		{
-			public string topic;
-			public string message;
-			private const int PoolLimit = 5000;
-			private topicMessagePair()
-			{
-				//do not let others instance us
-			}
+        public class topicMessagePair:IDisposable
+        {
+            public string topic;
+            public string message;
+            private topicMessagePair()
+            {
+                //do not let others instance us
+            }
 			public static topicMessagePair Aquire()
 			{
 				topicMessagePair obj;
@@ -46,7 +45,7 @@ namespace E3Core.Server
 			{
                 topic = string.Empty;
                 message = string.Empty;
-				StaticObjectPool.Push(this, PoolLimit);
+				StaticObjectPool.Push(this);
 			}
 			~topicMessagePair()
 			{
@@ -56,18 +55,14 @@ namespace E3Core.Server
 			}
 		}
 
-		Task _serverThread = null;
+        Task _serverThread = null;
 
-		public static ConcurrentQueue<string> IncomingChatMessages = new ConcurrentQueue<string>();
-		public static ConcurrentQueue<string> MQChatMessages = new ConcurrentQueue<string>();
-		public static ConcurrentQueue<string> CommandsToSend = new ConcurrentQueue<string>();
-		private static ConcurrentQueue<topicMessagePair> _topicMessages = new ConcurrentQueue<topicMessagePair>();
-		private const int MaxTopicMessages = 5000;
-		private const int TopicDropLogIntervalMs = 5000;
-		private static int _topicMessageDrops = 0;
-		private static long _lastTopicDropLog = 0;
+        public static ConcurrentQueue<string> IncomingChatMessages = new ConcurrentQueue<string>();
+        public static ConcurrentQueue<string> MQChatMessages = new ConcurrentQueue<string>();
+        public static ConcurrentQueue<string> CommandsToSend = new ConcurrentQueue<string>();
+        public static ConcurrentQueue<topicMessagePair> _topicMessages = new ConcurrentQueue<topicMessagePair>();
 
-		public static Int32 PubPort = 0;
+        public static Int32 PubPort = 0;
 
 
 
@@ -122,36 +117,13 @@ namespace E3Core.Server
 			_serverThread = Task.Factory.StartNew(() => { Process(filePath); }, CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
 
         }
-		public  static void AddTopicMessage(string topic, string message)
-		{
-			if (_topicMessages.Count >= MaxTopicMessages)
-			{
-				Interlocked.Increment(ref _topicMessageDrops);
-				if (ShouldLogTopicDrop())
-				{
-					MQ.WriteDelayed($"PubServer: Dropping topic '{topic}' due to backlog ({_topicMessages.Count}/{MaxTopicMessages}).");
-				}
-				return;
-			}
-			topicMessagePair t = topicMessagePair.Aquire();
-			t.topic = topic;
-			t.message=message;
+        public  static void AddTopicMessage(string topic, string message)
+        {  
+            topicMessagePair t = topicMessagePair.Aquire();
+            t.topic = topic;
+            t.message=message;
 		     _topicMessages.Enqueue(t);
-		}
-		public static int TopicMessageQueueCount => _topicMessages.Count;
-		public static int TopicMessageDropCount => Volatile.Read(ref _topicMessageDrops);
-		public static int TopicMessageQueueLimit => MaxTopicMessages;
-
-		private static bool ShouldLogTopicDrop()
-		{
-			long now = Core.StopWatch.ElapsedMilliseconds;
-			if (now - _lastTopicDropLog > TopicDropLogIntervalMs)
-			{
-				_lastTopicDropLog = now;
-				return true;
-			}
-			return false;
-		}
+        }
         private void Process(string filePath)
         {
 			//need to do this so double parses work in other languages
