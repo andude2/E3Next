@@ -334,15 +334,6 @@ namespace E3Core.Processors
 			var invariant = CultureInfo.InvariantCulture;
 			var sharedClient = NetMQServer.SharedDataClient;
 			if (sharedClient != null)
-			{
-				PubServer.AddTopicMessage("${Me.Queue_CommandQueue}", sharedClient.CommandQueueCount.ToString(invariant));
-				PubServer.AddTopicMessage("${Me.Queue_IMGUICommands}", sharedClient.IMGUIQueueCount.ToString(invariant));
-				PubServer.AddTopicMessage("${Me.QueueDrops_CommandQueue}", sharedClient.CommandQueueDropCount.ToString(invariant));
-				PubServer.AddTopicMessage("${Me.QueueDrops_IMGUICommands}", sharedClient.IMGUIQueueDropCount.ToString(invariant));
-				PubServer.AddTopicMessage("${Me.SharedDataConnectedUsers}", sharedClient.ConnectedUsers.ToString(invariant));
-				PubServer.AddTopicMessage("${Me.SharedDataTopicUsers}", sharedClient.TopicUserCount.ToString(invariant));
-				PubServer.AddTopicMessage("${Me.SharedDataTopicEntries}", sharedClient.TopicEntryCount.ToString(invariant));
-			}
 			PubServer.AddTopicMessage("${Me.Queue_TloRequests}", RouterServer.OutstandingRequestCount.ToString(invariant));
 			PubServer.AddTopicMessage("${Me.Queue_TloResponses}", RouterServer.OutstandingResponseCount.ToString(invariant));
 			PubServer.AddTopicMessage("${Me.QueueDrops_TloRequests}", RouterServer.DroppedRequestCount.ToString(invariant));

@@ -3789,13 +3789,19 @@ namespace E3Core.UI.Windows.CharacterSettings
 					if (imgui_Button("Show Local")) { _cfgIfPickerActiveTab = 0; }
 					imgui_SameLine();
 					if (imgui_Button("Show Global")) { _cfgIfPickerActiveTab = 1; }
+					imgui_SameLine();
+					if (imgui_Button("Show Samples")) { _cfgIfPickerActiveTab = 2; }
 
 					// Active source label
-					string activeSrc = _cfgIfPickerActiveTab == 0 ? $"Local IFs ({_cfgIfLocalLines.Count})" : $"Global IFs ({_cfgIfGlobalLines.Count})";
+					string activeSrc = _cfgIfPickerActiveTab == 0 ? $"Local IFs ({_cfgIfLocalLines.Count})"
+						: _cfgIfPickerActiveTab == 1 ? $"Global IFs ({_cfgIfGlobalLines.Count})"
+						: $"Sample IFs ({_cfgIfSampleLines.Count})";
 					imgui_TextColored(0.9f,0.85f,0.5f,1f, activeSrc);
 
 					// Render current source list
-					var current = _cfgIfPickerActiveTab == 0 ? _cfgIfLocalLines : _cfgIfGlobalLines;
+					var current = _cfgIfPickerActiveTab == 0 ? _cfgIfLocalLines
+						: _cfgIfPickerActiveTab == 1 ? _cfgIfGlobalLines
+						: _cfgIfSampleLines;
 					Render_IfsPickerList(current);
 
 					imgui_Separator();

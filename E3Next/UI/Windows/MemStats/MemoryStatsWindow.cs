@@ -150,7 +150,7 @@ namespace E3Core.UI.Windows.MemStats
 											  ImGuiTableFlags.ImGuiTableFlags_BordersInner |
 											  ImGuiTableFlags.ImGuiTableFlags_ScrollY| ImGuiTableFlags.ImGuiTableFlags_Resizable);
 
-						const float summaryLegendHeight = 190f; // Enough room for summary metrics plus multi-line legend
+						const float summaryLegendHeight = 60f; // Enough room for summary metrics plus multi-line legend
 						float tableHeight = Math.Max(150f, imgui_GetContentRegionAvailY() - summaryLegendHeight);
 
 						if (table.BeginTable("MemoryStatsTable", 4, tableFlags, 0f, tableHeight))
@@ -235,10 +235,12 @@ namespace E3Core.UI.Windows.MemStats
 
 		private static void RenderSeverityLegend()
 		{
-			imgui_Text("EQ Commit severity legend:");
-			foreach (var band in _eqCommitSeverityBands)
+			if (imgui_CollapsingHeader("EQ Commit severity legend:", 0))
 			{
-				imgui_TextColored(band.R, band.G, band.B, 1.0f, $"  {band.Label}");
+				foreach (var band in _eqCommitSeverityBands)
+				{
+					imgui_TextColored(band.R, band.G, band.B, 1.0f, $"  {band.Label}");
+				}
 			}
 		}
 		public class MemoryStats
