@@ -503,6 +503,7 @@ namespace E3Core.Processors
         {
             Casting.RefreshGemCache();
             Basics.RefreshGroupMembers();
+			Basics.RefreshRaidMembers();
         }
 		public static void ReInit()
 		{
