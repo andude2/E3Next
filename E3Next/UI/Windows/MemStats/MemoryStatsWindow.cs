@@ -179,7 +179,7 @@ namespace E3Core.UI.Windows.MemStats
 											  ImGuiTableFlags.ImGuiTableFlags_BordersInner |
 											  ImGuiTableFlags.ImGuiTableFlags_ScrollY| ImGuiTableFlags.ImGuiTableFlags_Resizable);
 
-						const float summaryLegendHeight = 190f; // Enough room for summary metrics plus multi-line legend
+						const float summaryLegendHeight = 60f; // Enough room for summary metrics plus multi-line legend
 						float tableHeight = Math.Max(150f, imgui_GetContentRegionAvailY() - summaryLegendHeight);
 
 						if (table.BeginTable("MemoryStatsTable", 4, tableFlags, 0f, tableHeight))
@@ -211,25 +211,6 @@ namespace E3Core.UI.Windows.MemStats
 								
 							}
 						}
-					}
-					// Summary at the bottom
-					imgui_Separator();
-					List<MemoryStats> summaryStats= _memoryStats;
-				
-					if (summaryStats.Count > 0)
-					{
-						double totalCSharp = summaryStats.Sum(x => x.CSharpMemoryMB);
-						double totalEQ = summaryStats.Sum(x => x.EQCommitSizeMB);
-
-						imgui_Text($"Total Characters: {summaryStats.Count}");
-						imgui_SameLine();
-						imgui_Text($"Total C# Memory: {totalCSharp:N2} MB");
-						imgui_SameLine();
-						imgui_Text($"Total EQ Commit: {totalEQ:N2} MB");
-					}
-					else
-					{
-						imgui_Text("No memory statistics available. Use /e3memstats to collect data.");
 					}
 
 					imgui_Separator();

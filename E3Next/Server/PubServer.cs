@@ -64,6 +64,14 @@ namespace E3Core.Server
 
         public static Int32 PubPort = 0;
 
+        private const int MaxTopicMessages = 10000;
+        private const int TopicDropLogIntervalMs = 5000;
+        private static int _topicMessageDropCount = 0;
+        private static long _lastTopicDropLog;
+
+        public static int TopicMessageQueueCount => _topicMessages.Count;
+        public static int TopicMessageDropCount => Volatile.Read(ref _topicMessageDropCount);
+
 
 
         public void Start(Int32 port)
@@ -118,11 +126,24 @@ namespace E3Core.Server
 
         }
         public  static void AddTopicMessage(string topic, string message)
-        {  
+        {
             topicMessagePair t = topicMessagePair.Aquire();
             t.topic = topic;
             t.message=message;
-		     _topicMessages.Enqueue(t);
+
+            if (_topicMessages.Count >= MaxTopicMessages)
+            {
+                Interlocked.Increment(ref _topicMessageDropCount);
+                t.Dispose();
+                if (ShouldLogTopicDrop())
+                {
+                    MQ.WriteDelayed($"PubServer: Dropping topic message ({_topicMessages.Count}/{MaxTopicMessages}).");
+                }
+            }
+            else
+            {
+                _topicMessages.Enqueue(t);
+            }
         }
         private void Process(string filePath)
         {
@@ -190,6 +211,17 @@ namespace E3Core.Server
                 }
 				MQ.WriteDelayed("Shutting down PubServer Thread.");
             }
+        }
+
+        private static bool ShouldLogTopicDrop()
+        {
+            long now = Core.StopWatch.ElapsedMilliseconds;
+            if (now - _lastTopicDropLog > TopicDropLogIntervalMs)
+            {
+                _lastTopicDropLog = now;
+                return true;
+            }
+            return false;
         }
     }
 }
