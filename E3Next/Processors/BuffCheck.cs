@@ -2074,65 +2074,73 @@ namespace E3Core.Processors
 					Int32 maxLoop = 25;
 					if (hasSongBuffv1 || hasSongBuffv2 || hasSongBuffv3 || hasSongBuffv4)
 					{
-						string manastoneCommand = $"/useitem \"{manastoneName}\"";
-
-						if (hasSongBuffv4)
+						var manaStoneEquip = Basics.EquipManaStoneIfRequired(manastoneName);
+						using (manaStoneEquip)
 						{
-							if (Songv4Duration > songv4MaxDuration) return;
-						}
-
-						MQ.Write($"\agUsing {manastoneName} for Laz Enc Epic...");
-						pctHps = MQ.Query<int>("${Me.PctHPs}");
-						pctMana = MQ.Query<int>("${Me.PctMana}");
-						int currentLoop = 0;
-						while (pctHps > minHP && (hasSongBuffv1 || hasSongBuffv2 || hasSongBuffv3 || hasSongBuffv4))
-						{
-							currentLoop++;
-							int currentMana = MQ.Query<int>("${Me.CurrentMana}");
+							if (manaStoneEquip != null)
+							{
+								MQ.Delay(500); // avoid disconnects by waiting after the neck swap
+							}
+							string manastoneCommand = $"/useitem \"{manastoneName}\"";
 
 							if (hasSongBuffv4)
 							{
 								if (Songv4Duration > songv4MaxDuration) return;
 							}
 
-							for (int i = 0; i < totalClicksToTry; i++)
+							MQ.Write($"\agUsing {manastoneName} for Laz Enc Epic...");
+							pctHps = MQ.Query<int>("${Me.PctHPs}");
+							pctMana = MQ.Query<int>("${Me.PctMana}");
+							int currentLoop = 0;
+							while (pctHps > minHP && (hasSongBuffv1 || hasSongBuffv2 || hasSongBuffv3 || hasSongBuffv4))
 							{
-								MQ.Cmd(manastoneCommand);
-							}
-							//allow mq to have the commands sent to the server
-							MQ.Delay(delayBetweenClicks);
-							NetMQServer.SharedDataClient.ProcessCommands();
-							PubClient.ProcessRequests();
-							if (EventProcessor.CommandListQueueHasCommand("/followme"))
-							{
-								return;
-							}
-							if (EventProcessor.CommandListQueueHasCommand("/chaseme"))
-							{
-								return;
-							}
-							if (MQ.Query<bool>("${Me.Invis}")) return;
-							if ((E3.CurrentClass & Class.Priest) == E3.CurrentClass && Basics.InCombat())
-							{
-								if (Heals.SomeoneNeedsHealing(null, currentMana, pctMana))
+								currentLoop++;
+								int currentMana = MQ.Query<int>("${Me.CurrentMana}");
+
+								if (hasSongBuffv4)
+								{
+									if (Songv4Duration > songv4MaxDuration) return;
+								}
+
+								for (int i = 0; i < totalClicksToTry; i++)
+								{
+									MQ.Cmd(manastoneCommand);
+								}
+								//allow mq to have the commands sent to the server
+								MQ.Delay(delayBetweenClicks);
+								NetMQServer.SharedDataClient.ProcessCommands();
+								PubClient.ProcessRequests();
+								if (EventProcessor.CommandListQueueHasCommand("/followme"))
 								{
 									return;
 								}
-							}
-							if (currentLoop > maxLoop)
-							{
-								return;
-							}
-							e3util.YieldToEQ();
-							pctHps = MQ.Query<int>("${Me.PctHPs}");
-							pctMana = MQ.Query<int>("${Me.PctMana}");
-							hasSongBuffv1 = MQ.Query<bool>("${Bool[${Me.Song[Mana Convergence I]}]}");
-							hasSongBuffv2 = MQ.Query<bool>("${Bool[${Me.Song[Mana Convergence II]}]}");
-							hasSongBuffv3 = MQ.Query<bool>("${Bool[${Me.Song[Mana Convergence III]}]}");
-							hasSongBuffv4 = MQ.Query<bool>("${Bool[${Me.Song[Mana Convergence IV]}]}");
-							if (hasSongBuffv4)
-							{
-								Songv4Duration = MQ.Query<Int32>("${Me.Song[Mana Convergence IV].Duration}");
+								if (EventProcessor.CommandListQueueHasCommand("/chaseme"))
+								{
+									return;
+								}
+								if (MQ.Query<bool>("${Me.Invis}")) return;
+								if ((E3.CurrentClass & Class.Priest) == E3.CurrentClass && Basics.InCombat())
+								{
+									if (Heals.SomeoneNeedsHealing(null, currentMana, pctMana))
+									{
+										return;
+									}
+								}
+								if (currentLoop > maxLoop)
+								{
+									return;
+								}
+								e3util.YieldToEQ();
+								pctHps = MQ.Query<int>("${Me.PctHPs}");
+								pctMana = MQ.Query<int>("${Me.PctMana}");
+								hasSongBuffv1 = MQ.Query<bool>("${Bool[${Me.Song[Mana Convergence I]}]}");
+								hasSongBuffv2 = MQ.Query<bool>("${Bool[${Me.Song[Mana Convergence II]}]}");
+								hasSongBuffv3 = MQ.Query<bool>("${Bool[${Me.Song[Mana Convergence III]}]}");
+								hasSongBuffv4 = MQ.Query<bool>("${Bool[${Me.Song[Mana Convergence IV]}]}");
+								if (hasSongBuffv4)
+								{
+									Songv4Duration = MQ.Query<Int32>("${Me.Song[Mana Convergence IV].Duration}");
+								}
 							}
 						}
 					}

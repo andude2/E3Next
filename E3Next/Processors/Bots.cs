@@ -64,6 +64,12 @@ namespace E3Core.Processors
 		private static System.Text.StringBuilder _stringBuilder = new System.Text.StringBuilder();
 		[ExposedData("Bots", "GlobalAllEnabled")]
 		private static bool GlobalAllEnabled = false;
+		public static bool IsGlobalBroadcastEnabled => GlobalAllEnabled;
+		public static void ToggleGlobalBroadcast()
+		{
+			GlobalAllEnabled = !GlobalAllEnabled;
+			E3.Bots.Broadcast($"\agSetting Global Broadcast to {GlobalAllEnabled}");
+		}
 		[ExposedData("Bots", "NetworkingPathsTolookAt")]
 		List<string> _pathsTolookAt = new List<string>();
 		Task _autoRegisrationTask;

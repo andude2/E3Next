@@ -198,6 +198,7 @@
     <Compile Include="UI\Windows\CharacterSettings\CharacterSettingsWindow.cs" />
     <Compile Include="UI\Windows\CharacterSettings\CharacterSettingsWindowHelpers.cs" />
     <Compile Include="UI\Windows\CharacterSettings\CharacterSettingsWindowStates.cs" />
+    <Compile Include="UI\Windows\ControlCenter\ControlCenterWindow.cs" />
     <Compile Include="UI\Windows\Hunt\HuntWindow.cs" />
     <Compile Include="UI\Windows\Hud\HudCastingWindow.cs" />
     <Compile Include="UI\Windows\MemStats\MemoryStatsWindow.cs" />
