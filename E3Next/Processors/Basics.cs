@@ -1,18 +1,16 @@
-using E3Core.Classes;
+﻿using E3Core.Classes;
 using E3Core.Data;
 using E3Core.Server;
 using E3Core.Settings;
 using E3Core.Settings.FeatureSettings;
-using E3Core.UI.Windows;
 using E3Core.Utility;
-
 using IniParser.Model;
 using MonoCore;
 using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Globalization;
+using System.Diagnostics.Eventing.Reader;
 using System.Linq;
 using System.Text;
 using System.Windows.Forms;
@@ -64,27 +62,6 @@ namespace E3Core.Processors
 		private static DateTime? _cursorOccupiedSince;
         private static TimeSpan _cursorOccupiedTime;
         private static TimeSpan _cursorOccupiedThreshold = new TimeSpan(0, 0, 0, 30);
-		private static readonly string[] _manaNecklaceItemNames = new[]
-		{
-			"Mana Necklace I",
-			"Mana Necklace II",
-			"Mana Necklace III",
-			"Mana Necklace IV",
-			"Mana Necklace V",
-			"Mana Necklace VI",
-			"Mana Necklace VII",
-			"Mana Necklace VIII",
-			"Mana Necklace IX",
-			"Mana Necklace X",
-			"Mana Necklace XI",
-			"Mana Necklace XII"
-		};
-		private static readonly string[] _manaStoneItemNames = new[]
-		{
-			"Manastone",
-			"Apocryphal Manastone",
-			"Rose Colored Manastone"
-		}.Concat(_manaNecklaceItemNames).ToArray();
 
 		[ExposedData("Basics", "XTargetFixEnabled")]
 		private static bool _enableXTargetFix = false;
@@ -253,6 +230,19 @@ namespace E3Core.Processors
 			},"Print out your character ini file");
 			//_enableXTargetFix
 
+
+			EventProcessor.RegisterCommand("/e3consume", (x) =>
+			{
+	            if(x.args.Count > 0)
+                {
+                    _itemToConsume = x.args[0];
+                }
+                else
+                {
+                    _itemToConsume = string.Empty;
+
+				}
+			}, "Click an item until no more exist");
 
 			EventProcessor.RegisterCommand("/e3bugs_xtargetfix", (x) =>
 			{
@@ -1631,73 +1621,39 @@ namespace E3Core.Processors
 						Casting.Cast(0, s);
                         return true;
 					}
+				}
 			}
-		}
             return false;
 		}
 
-		public static bool TryGetManaStoneItem(out string manastoneName)
-		{
-			foreach (var itemName in _manaStoneItemNames)
-			{
-				string query = "${Bool[${FindItem[=" + itemName + "]}]}";
-				if (MQ.Query<bool>(query))
-				{
-					manastoneName = itemName;
-					return true;
+        static string _itemToConsume = String.Empty;
+        [ClassInvoke(Data.Class.All)]
+        public static void ConsumeItem()
+        {
+           if (Casting.IsCasting()) return;
+           if(!String.IsNullOrWhiteSpace(_itemToConsume))
+           {
+               
+                if (MQ.Query<bool>($"${{FindItem[{_itemToConsume}]}}"))
+                {
+				
+                    if(MQ.Query<bool>($"${{Me.ItemReady[{_itemToConsume}]}}"))
+                    {
+						MQ.Cmd($"/useitem {_itemToConsume}");
+						MQ.Delay(500);
+                        e3util.ClearCursor();
+
+					}
 				}
-			}
+				else
+                {
+                    E3.Bots.Broadcast($"No more {_itemToConsume} to click");
+                    _itemToConsume = String.Empty;
+                }
+           }
+        }
 
-			manastoneName = string.Empty;
-			return false;
-		}
-
-		public static IDisposable EquipManaStoneIfRequired(string manastoneName)
-		{
-			if (!IsManaNecklace(manastoneName)) return null;
-
-			string currentNeckItem = MQ.Query<string>("${Me.Inventory[neck].Name}") ?? string.Empty;
-			if (string.Equals(currentNeckItem, manastoneName, StringComparison.OrdinalIgnoreCase))
-			{
-				return null;
-			}
-
-			if (string.IsNullOrWhiteSpace(manastoneName)) return null;
-
-			e3util.Exchange("neck", manastoneName);
-			MQ.Delay(500);
-
-			return new SlotItemRestore("neck", currentNeckItem);
-		}
-
-		private static bool IsManaNecklace(string itemName)
-		{
-			if (string.IsNullOrWhiteSpace(itemName)) return false;
-
-			return _manaNecklaceItemNames.Any(name => name.Equals(itemName, StringComparison.OrdinalIgnoreCase));
-		}
-
-			private sealed class SlotItemRestore : IDisposable
-			{
-				private readonly string _slotName;
-				private readonly string _itemName;
-
-				public SlotItemRestore(string slotName, string itemName)
-				{
-					_slotName = slotName;
-					_itemName = itemName;
-				}
-
-				public void Dispose()
-				{
-					if (string.IsNullOrWhiteSpace(_itemName)) return;
-
-					MQ.Delay(500); // wait after the last click before swapping back
-					e3util.Exchange(_slotName, _itemName);
-					MQ.Delay(500);
-				}
-			}
-		/// <summary>
+        /// <summary>
         /// Checks the mana resources, and does actions to regenerate mana during combat.
         /// </summary>
         [ClassInvoke(Data.Class.ManaUsers)]
@@ -1800,66 +1756,70 @@ namespace E3Core.Processors
                 pctHps = MQ.Query<int>("${Me.PctHPs}");
                 if (pctHps < minHP) return;
 
-				bool hasManaStone = TryGetManaStoneItem(out var manastoneName);
-				bool amIStanding = MQ.Query<bool>("${Me.Standing}");
+                bool hasManaStone = MQ.Query<bool>("${Bool[${FindItem[=Manastone]}]}");
+                
+                string manastoneName = "Manastone";
+                if(!hasManaStone)
+                {
+                    hasManaStone = MQ.Query<bool>("${Bool[${FindItem[=Apocryphal Manastone]}]}");
+                    if(hasManaStone) manastoneName = "Apocryphal Manastone";
+                    if(!hasManaStone)
+                    {
+                        hasManaStone = MQ.Query<bool>("${Bool[${FindItem[=Rose Colored Manastone]}]}");
+                        if (hasManaStone) manastoneName = "Rose Colored Manastone";
+                    }
+                }
+                bool amIStanding = MQ.Query<bool>("${Me.Standing}");
 
-				if (hasManaStone && amIStanding)
-				{
-					var manaStoneEquip = EquipManaStoneIfRequired(manastoneName);
-					using (manaStoneEquip)
-					{
-						if (manaStoneEquip != null)
+                if (hasManaStone && amIStanding)
+                {
+                    string manastoneCommand = $"/useitem \"{manastoneName}\"";
+                    e3util.YieldToEQ();
+                    if (MQ.Query<bool>("${Me.Invis}")) return;
+
+                    MQ.Write("\agUsing Manastone...");
+                    pctHps = MQ.Query<int>("${Me.PctHPs}");
+                    pctMana = MQ.Query<int>("${Me.PctMana}");
+                    int currentLoop = 0;
+                    while (pctHps > minHP && pctMana < maxMana)
+                    {
+                        currentLoop++;
+                        int currentMana = MQ.Query<int>("${Me.CurrentMana}");
+
+                        for (int i = 0; i < totalClicksToTry; i++)
+                        {
+                            MQ.Cmd(manastoneCommand);
+                        }
+                        //allow mq to have the commands sent to the server
+                        MQ.Delay(delayBetweenClicks);
+						NetMQServer.SharedDataClient.ProcessCommands();
+						PubClient.ProcessRequests();
+                        
+                        if(EventProcessor.CommandListQueueHasCommand("/followme"))
 						{
-							MQ.Delay(500); // give the server time to register the neck swap before clicking
+                            return;
 						}
-						string manastoneCommand = $"/useitem \"{manastoneName}\"";
-						e3util.YieldToEQ();
+						if (EventProcessor.CommandListQueueHasCommand("/chaseme"))
+						{
+							return;
+						}
 						if (MQ.Query<bool>("${Me.Invis}")) return;
+                        if ((E3.CurrentClass & Class.Priest) == E3.CurrentClass && Basics.InCombat())
+                        {
+                            if (Heals.SomeoneNeedsHealing(null,currentMana, pctMana))
+                            {
+                                return;
+                            }
+                        }
+                        if (currentLoop > maxLoop)
+                        {
+                            return;
+                        }
 
-						MQ.Write($"\agUsing {manastoneName}...");
-						pctHps = MQ.Query<int>("${Me.PctHPs}");
-						pctMana = MQ.Query<int>("${Me.PctMana}");
-						int currentLoop = 0;
-						while (pctHps > minHP && pctMana < maxMana)
-						{
-							currentLoop++;
-							int currentMana = MQ.Query<int>("${Me.CurrentMana}");
-
-							for (int i = 0; i < totalClicksToTry; i++)
-							{
-								MQ.Cmd(manastoneCommand);
-							}
-							//allow mq to have the commands sent to the server
-							MQ.Delay(delayBetweenClicks);
-							NetMQServer.SharedDataClient.ProcessCommands();
-							PubClient.ProcessRequests();
-							
-							if(EventProcessor.CommandListQueueHasCommand("/followme"))
-							{
-								return;
-							}
-							if (EventProcessor.CommandListQueueHasCommand("/chaseme"))
-							{
-								return;
-							}
-							if (MQ.Query<bool>("${Me.Invis}")) return;
-							if ((E3.CurrentClass & Class.Priest) == E3.CurrentClass && Basics.InCombat())
-							{
-								if (Heals.SomeoneNeedsHealing(null,currentMana, pctMana))
-								{
-									return;
-								}
-							}
-							if (currentLoop > maxLoop)
-							{
-								return;
-							}
-
-							pctHps = MQ.Query<int>("${Me.PctHPs}");
-							pctMana = MQ.Query<int>("${Me.PctMana}");
-						}
-					}
-				}
+                        pctHps = MQ.Query<int>("${Me.PctHPs}");
+                        pctMana = MQ.Query<int>("${Me.PctMana}");
+                    }
+                }
             }
         }
 		[ClassInvoke(Data.Class.All)]

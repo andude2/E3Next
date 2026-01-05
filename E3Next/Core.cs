@@ -2286,6 +2286,7 @@ namespace MonoCore
         {
             _spawnsByName.Clear();
             SpawnsByID.Clear();
+            foreach (var spawn in _spawns) { spawn.Dispose(); }
             _spawns.Clear();
         }
         public void RefreshList()
