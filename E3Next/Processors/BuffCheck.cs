@@ -7,6 +7,7 @@ using MonoCore;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Xml.Linq;
 
 
 namespace E3Core.Processors
@@ -114,7 +115,11 @@ namespace E3Core.Processors
 				ClearBuffTimers();
 
 			});
+			EventProcessor.RegisterCommand("/e3debug_buffTimers", (x) =>
+			{
+				e3util.PrintTimerStatus(_buffTimers, "Buff timers");
 
+			});
 
 			EventProcessor.RegisterCommand("/blockbuff", (x) =>
 			{
@@ -508,6 +513,7 @@ namespace E3Core.Processors
 		public static void Check_Buffs()
 		{
 			if (E3.IsInvis) return;
+			if (E3.IsInvul) return;
 			if (Heals.IgnoreHealTargets.Count > 0) return;
 			//e3util.PrintTimerStatus(_buffTimers, ref _printoutTimer, "Buff timers");
 			//instant buffs have their own shouldcheck, need it snappy so check quickly.
@@ -606,6 +612,7 @@ namespace E3Core.Processors
 		public static void BuffInstant(List<Data.Spell> buffs)
 		{
 			if (E3.IsInvis) return;
+			if (E3.IsInvul) return;
 			if (e3util.IsActionBlockingWindowOpen()) return;
 			if (!e3util.ShouldCheck(ref _nextInstantBuffRefresh, _nextInstantRefreshTimeInterval)) return;
 			//self only, instacast buffs only
@@ -870,6 +877,8 @@ namespace E3Core.Processors
 		{
 			if (!spell.Enabled) return BuffBots_ReturnType.Continue;
 
+
+
 			if (spell.Debug) _log.Write($"Buffs-Spell-{spell.CastName}", Logging.LogLevels.Error);
 			//using (_log.Trace($"Buffs-Spell-{spell.CastName}"))
 			{
@@ -900,8 +909,12 @@ namespace E3Core.Processors
 						}
 					}
 				}
-
-
+				if (E3.Bots.IsMyBot(target) && !usePets)
+				{
+					bool invulnerable = false;
+					Boolean.TryParse(E3.Bots.Query(target, "${Me.Invulnerable}"), out invulnerable);
+					if (invulnerable) return BuffBots_ReturnType.Continue;
+				}
 
 				if (Heals.IgnoreHealTargets.Count>1) return BuffBots_ReturnType.Continue;
 
@@ -984,7 +997,8 @@ namespace E3Core.Processors
 						//Is the buff still good? if so, skip
 
 						if (Casting.BuffNotReady(spell)) return BuffBots_ReturnType.Continue;
-						
+					
+
 						if (BuffTimerIsGood(spell, s, usePets))
 						{
 							return BuffBots_ReturnType.Continue;
@@ -1074,7 +1088,7 @@ namespace E3Core.Processors
 							if (shouldContinue) { return BuffBots_ReturnType.Continue; }
 						}
 						if (Casting.BuffNotReady(spell)) return BuffBots_ReturnType.Continue;
-						//Is the buff still good? if so, skip
+			//Is the buff still good? if so, skip
 						if (BuffTimerIsGood(spell, s, usePets))
 						{
 							return BuffBots_ReturnType.Continue;
@@ -1180,16 +1194,12 @@ namespace E3Core.Processors
 
 							//check to see if they already have the buff
 
-							bool hasBuff = findBuffList(spell.CastTarget).Contains(spell.SpellID);
-						
-							if(hasBuff)
+							
+							if (BuffTimerIsGood(spell, s, usePets))
 							{
-								if (BuffTimerIsGood(spell, s, usePets))
-								{
-									return BuffBots_ReturnType.Continue;
-								}
+								return BuffBots_ReturnType.Continue;
 							}
-
+					
 							Casting.TrueTarget(s.ID);
 							MQ.Delay(2000, "${Target.BuffsPopulated}");
 							bool willStack = true;
@@ -1244,6 +1254,8 @@ namespace E3Core.Processors
 						{
 							if (Casting.BuffNotReady(spell)) return BuffBots_ReturnType.Continue;
 							//Is the buff still good? if so, skip
+
+
 							if (BuffTimerIsGood(spell, s, usePets))
 							{
 								return BuffBots_ReturnType.Continue;
@@ -1539,7 +1551,7 @@ namespace E3Core.Processors
 						}
 						else
 						{   //if a bot, check to see if the buff still exists
-							bool isABot = E3.Bots.BotsConnected().Contains(s.CleanName, StringComparer.OrdinalIgnoreCase);
+							bool isABot = E3.Bots.BotsConnected().Contains(spell.CastTarget, StringComparer.OrdinalIgnoreCase);
 							if (isABot)
 							{
 								//register the user to get their buff data if its not already there
@@ -2056,7 +2068,7 @@ namespace E3Core.Processors
 					int pctMana = MQ.Query<int>("${Me.PctMana}");
 					var pctHps = MQ.Query<int>("${Me.PctHPs}");
 					int currentHps = MQ.Query<int>("${Me.CurrentHPs}");
-					int minHP = 70;
+					int minHP = E3.CharacterSettings.ManaStone_MinHP;
 
 					if (E3.CharacterSettings.ManaStone_ExceptionZones.Contains(Zoning.CurrentZone.ShortName)) return;
 
@@ -2078,9 +2090,9 @@ namespace E3Core.Processors
 
 
 					string manastoneName = "Manastone";
-					Int32 totalClicksToTry = 5;
-					Int32 delayBetweenClicks = 20;
-					Int32 maxLoop = 25;
+					Int32 totalClicksToTry = E3.CharacterSettings.ManaStone_NumberOfClicksPerLoop;
+					Int32 delayBetweenClicks = E3.CharacterSettings.ManaStone_DelayBetweenLoops;
+					Int32 maxLoop = E3.CharacterSettings.ManaStone_NumberOfLoops;
 					if (hasManaStone && (hasSongBuffv1 || hasSongBuffv2 || hasSongBuffv3 || hasSongBuffv4))
 					{
 						string manastoneCommand = $"/useitem \"{manastoneName}\"";
