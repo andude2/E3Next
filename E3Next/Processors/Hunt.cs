@@ -318,19 +318,36 @@ namespace E3Core.Processors
         private static readonly int _pullCooldownMs = 1800; // slightly faster retry cadence
         private static long _nextNavAt = 0;
         private static readonly int _navCooldownMs = 350; // more responsive navigation updates
+        private const double _navStopPathThreshold = 50.0; // stop nav early when path is shorter than this
         private static int _navTargetID = 0; // last spawn id we commanded /nav towards
+        private static int _navCloseHoldTargetID = 0; // target we're intentionally not navigating to because we're already close
         private static long _lastAssistCmdAt = 0;
         private static readonly int _assistCmdCooldownMs = 2000; // avoid assist spam
         // Track the current nav command target
-        internal static void ResetNavTargetTracking() { _navTargetID = 0; }
+        internal static void ResetNavTargetTracking()
+        {
+            _navTargetID = 0;
+            _navCloseHoldTargetID = 0;
+        }
         private static void BeginLootWait(string reason)
         {
             _waitingForLoot = true;
             _lootWaitStartMs = Core.StopWatch.ElapsedMilliseconds;
+            _lootWaitCompleteAtMs = 0; // reset completion timestamp for new loot wait
             HuntStateMachine.TransitionTo(HuntState.WaitingForLoot, reason);
             // Let SmartLoot drive; drop nav
             if (HuntStateMachine.IsNavigationOwned)
                 HuntStateMachine.ReleaseNavigationControl("BeginLootWait");
+            // Reset aggro recovery state when combat ends
+            ResetAggroRecoveryState();
+        }
+
+        private static void ResetAggroRecoveryState()
+        {
+            _aggroRecoveryMode = false;
+            _aggroRecoveryOriginalTarget = 0;
+            _aggroRecoveryAddTarget = 0;
+            _knownXTargetIds.Clear();
         }
 
         private static bool LootWaitComplete()
@@ -362,6 +379,16 @@ namespace E3Core.Processors
         private static long _lootWaitStartMs = 0;
         private static readonly int _lootMinWaitMs = 2000;   // always wait at least 2s after XTarget clears
         private static readonly int _lootWaitFallbackMs = 10000; // fallback max wait
+        private static readonly int _lootTloUpdateDelayMs = 250; // delay after loot wait complete for SmartLoot TLO to update
+        private static long _lootWaitCompleteAtMs = 0; // timestamp when loot wait completed (for TLO update delay)
+
+        // XTarget aggro management: track known xtargets and manage aggro on new adds
+        private static readonly HashSet<int> _knownXTargetIds = new HashSet<int>();
+        private static bool _aggroRecoveryMode = false;
+        private static int _aggroRecoveryOriginalTarget = 0;
+        private static int _aggroRecoveryAddTarget = 0;
+        private static long _lastAggroAbilityAttempt = 0;
+        private static readonly int _aggroAbilityCooldownMs = 1500; // cooldown between aggro ability attempts
 
         // Helper: detect when XTarget just dropped to 0 since last tick
         private static bool XTargetJustCleared()
@@ -1045,6 +1072,16 @@ namespace E3Core.Processors
             // Keep cached zone current on the processing loop (not the UI thread)
             UpdateCurrentZoneCached();
 
+            // Run navigation proximity handling every pulse so we react immediately when we're close
+            if (HuntStateMachine.CurrentState == HuntState.NavigatingToTarget)
+            {
+                try { UpdateNavPathProximity(true, out _); } catch { }
+            }
+            else if (_navCloseHoldTargetID != 0)
+            {
+                _navCloseHoldTargetID = 0;
+            }
+
             // Throttle work, including publishing SmartLoot state
             if (!e3util.ShouldCheck(ref _nextTickAt, _tickIntervalMs)) return;
 
@@ -1459,6 +1496,7 @@ namespace E3Core.Processors
                     TargetName = string.Empty;
                     _waitingForLoot = true;
                     _lootWaitStartMs = Core.StopWatch.ElapsedMilliseconds;
+                    _lootWaitCompleteAtMs = 0; // reset completion timestamp for new loot wait
                     HuntStateMachine.TransitionTo(HuntState.WaitingForLoot, "Target became invalid");
                     return;
                 }
@@ -1576,7 +1614,7 @@ namespace E3Core.Processors
                             MQ.Delay(200);
                             MQ.Cmd("/face");
                             MQ.Delay(300);
-                            MQ.Cmd("/stick 10 moveback");
+                            MQ.Cmd("/stick 15 moveback");
                         }
                         HuntStateMachine.TransitionTo(HuntState.InCombat, "At melee range with valid target");
                         return;
@@ -1751,6 +1789,11 @@ namespace E3Core.Processors
             // Attempt to get nav control; if we can't, just continue (another system may be navigating)
             HuntStateMachine.RequestNavigationControl("NavigateToTarget");
 
+            double navPathRemaining = 0;
+            bool navPathShort = false;
+            try { navPathShort = UpdateNavPathProximity(false, out navPathRemaining); } catch { navPathShort = false; }
+
+
             // Ensure EQ target and nav are heading to the current TargetID
             try
             {
@@ -1762,16 +1805,21 @@ namespace E3Core.Processors
                 bool navActive = MQ.Query<bool>("${Navigation.Active}");
                 // Only stop nav if WE own nav and WE previously issued nav to a different id.
                 // Do not interrupt SmartLoot navigation to corpses.
-                if (navActive && HuntStateMachine.IsNavigationOwned && _navTargetID > 0 && _navTargetID != TargetID && TargetID > 0)
+                if (navActive && HuntStateMachine.IsNavigationOwned && TargetID > 0)
                 {
-                    MQ.Cmd("/nav stop");
-                    _navTargetID = 0;
+                    if (_navTargetID > 0 && _navTargetID != TargetID)
+                    {
+                        MQ.Cmd("/nav stop");
+                        _navTargetID = 0;
+                        _navCloseHoldTargetID = 0;
+                    }
                 }
             }
             catch { }
 
             // Navigate towards target with cooldown to prevent spam
-            if (TargetID > 0 && e3util.ShouldCheck(ref _nextNavAt, _navCooldownMs))
+            bool holdNav = (_navCloseHoldTargetID == TargetID && navPathShort);
+            if (TargetID > 0 && !holdNav && e3util.ShouldCheck(ref _nextNavAt, _navCooldownMs))
             {
                 StartNavNonBlocking(TargetID);
             }
@@ -1880,6 +1928,296 @@ namespace E3Core.Processors
             {
                 HuntStateMachine.ReleaseNavigationControl("InCombat");
             }
+
+            // XTarget aggro management: check for new adds and manage aggro
+            ProcessXTargetAggroManagement();
+        }
+
+        // Updates the known XTarget set and returns the ID of a new add with < 100% aggro, or 0 if none
+        private static int CheckForNewXTargetNeedingAggro()
+        {
+            try
+            {
+                int currentXTargets = MQ.Query<int>("${Me.XTarget}");
+                if (currentXTargets <= 0)
+                {
+                    _knownXTargetIds.Clear();
+                    return 0;
+                }
+
+                int max = e3util.XtargetMax;
+                HashSet<int> currentIds = new HashSet<int>();
+
+                for (int i = 1; i <= max && i <= currentXTargets; i++)
+                {
+                    int xid = 0;
+                    try { xid = MQ.Query<int>($"${{Me.XTarget[{i}].ID}}"); } catch { xid = 0; }
+                    if (xid <= 0) continue;
+
+                    // Only consider auto-hater targets (actual combat mobs)
+                    bool autoHater = false;
+                    try { autoHater = MQ.Query<bool>($"${{Me.XTarget[{i}].TargetType.Equal[Auto Hater]}}"); } catch { }
+                    if (!autoHater) continue;
+
+                    // Skip corpses
+                    bool isCorpse = false;
+                    try { isCorpse = MQ.Query<bool>($"${{Spawn[id {xid}].Type.Equal[Corpse]}}"); } catch { }
+                    if (isCorpse) continue;
+
+                    currentIds.Add(xid);
+
+                    // Check if this is a new xtarget we haven't seen before
+                    if (!_knownXTargetIds.Contains(xid))
+                    {
+                        // New add detected - check aggro
+                        int pctAggro = 0;
+                        try { pctAggro = MQ.Query<int>($"${{Me.XTarget[{i}].PctAggro}}"); } catch { }
+
+                        if (pctAggro < 100)
+                        {
+                            string mobName = "";
+                            try { mobName = MQ.Query<string>($"${{Me.XTarget[{i}].CleanName}}"); } catch { }
+                            _log.Write($"Hunt: New add detected - {mobName} (ID: {xid}) with {pctAggro}% aggro");
+                            DebugLog($"AGGRO: New add {mobName} ({xid}) at {pctAggro}% aggro");
+
+                            // Add to known set before returning
+                            _knownXTargetIds.Add(xid);
+                            return xid;
+                        }
+                    }
+                }
+
+                // Update known set to current IDs (removes dead mobs)
+                _knownXTargetIds.Clear();
+                foreach (int id in currentIds)
+                {
+                    _knownXTargetIds.Add(id);
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.Write($"Hunt: Error checking xtarget aggro: {ex.Message}");
+            }
+
+            return 0;
+        }
+
+        // Gets current aggro on a specific xtarget by ID
+        private static int GetXTargetAggro(int targetId)
+        {
+            try
+            {
+                int currentXTargets = MQ.Query<int>("${Me.XTarget}");
+                int max = e3util.XtargetMax;
+
+                for (int i = 1; i <= max && i <= currentXTargets; i++)
+                {
+                    int xid = 0;
+                    try { xid = MQ.Query<int>($"${{Me.XTarget[{i}].ID}}"); } catch { xid = 0; }
+                    if (xid == targetId)
+                    {
+                        return MQ.Query<int>($"${{Me.XTarget[{i}].PctAggro}}");
+                    }
+                }
+            }
+            catch { }
+            return 0;
+        }
+
+        // Use aggro tools on current target: taunt + pull ability
+        private static void UseAggroTools()
+        {
+            long now = Core.StopWatch.ElapsedMilliseconds;
+            if (now - _lastAggroAbilityAttempt < _aggroAbilityCooldownMs) return;
+            _lastAggroAbilityAttempt = now;
+
+            // Try taunt first
+            try
+            {
+                if (MQ.Query<bool>("${Me.AbilityReady[Taunt]}"))
+                {
+                    MQ.Cmd("/doability Taunt");
+                    DebugLog("AGGRO: Used Taunt");
+                }
+            }
+            catch { }
+
+            // Also use the configured pull ability for additional aggro generation
+            string method = NormalizeMethod(PullMethod);
+            switch (method)
+            {
+                case "Spell":
+                    if (!string.IsNullOrWhiteSpace(PullSpell))
+                    {
+                        try
+                        {
+                            bool ready = MQ.Query<bool>($"${{Spell[{PullSpell}].Stacks}}");
+                            if (ready && MQ.Query<int>("${Me.Casting.ID}") == 0)
+                            {
+                                MQ.Cmd($"/casting \"{PullSpell}\"");
+                                DebugLog($"AGGRO: Used spell {PullSpell}");
+                            }
+                        }
+                        catch { }
+                    }
+                    break;
+
+                case "Item":
+                    if (!string.IsNullOrWhiteSpace(PullItem))
+                    {
+                        try
+                        {
+                            bool ready = MQ.Query<bool>($"${{FindItem[{PullItem}].TimerReady}}");
+                            if (ready && MQ.Query<int>("${Me.Casting.ID}") == 0)
+                            {
+                                MQ.Cmd($"/casting \"{PullItem}\" item");
+                                DebugLog($"AGGRO: Used item {PullItem}");
+                            }
+                        }
+                        catch { }
+                    }
+                    break;
+
+                case "AA":
+                    if (!string.IsNullOrWhiteSpace(PullAA))
+                    {
+                        try
+                        {
+                            bool ready = MQ.Query<bool>($"${{Me.AltAbilityReady[{PullAA}]}}");
+                            if (ready && MQ.Query<int>("${Me.Casting.ID}") == 0)
+                            {
+                                MQ.Cmd($"/alt activate ${{Me.AltAbility[{PullAA}].ID}}");
+                                DebugLog($"AGGRO: Used AA {PullAA}");
+                            }
+                        }
+                        catch { }
+                    }
+                    break;
+
+                case "Disc":
+                    if (!string.IsNullOrWhiteSpace(PullDisc))
+                    {
+                        try
+                        {
+                            bool ready = MQ.Query<bool>($"${{Me.CombatAbilityReady[{PullDisc}]}}");
+                            if (ready)
+                            {
+                                MQ.Cmd($"/disc {PullDisc}");
+                                DebugLog($"AGGRO: Used disc {PullDisc}");
+                            }
+                        }
+                        catch { }
+                    }
+                    break;
+            }
+        }
+
+        // Main aggro management logic for handling new adds
+        private static void ProcessXTargetAggroManagement()
+        {
+            // If we're in aggro recovery mode, continue working on the add
+            if (_aggroRecoveryMode)
+            {
+                // Check if the add target is still valid
+                bool addStillValid = false;
+                try
+                {
+                    addStillValid = MQ.Query<int>($"${{SpawnCount[id {_aggroRecoveryAddTarget}]}}") > 0
+                                    && !MQ.Query<bool>($"${{Spawn[id {_aggroRecoveryAddTarget}].Type.Equal[Corpse]}}");
+                }
+                catch { }
+
+                if (!addStillValid)
+                {
+                    // Add died or is gone, return to original target
+                    _log.Write($"Hunt: Add target {_aggroRecoveryAddTarget} no longer valid, returning to original target {_aggroRecoveryOriginalTarget}");
+                    DebugLog($"AGGRO: Add gone, returning to {_aggroRecoveryOriginalTarget}");
+                    ReturnToOriginalTarget();
+                    return;
+                }
+
+                // Check current aggro on the add
+                int addAggro = GetXTargetAggro(_aggroRecoveryAddTarget);
+
+                if (addAggro >= 100)
+                {
+                    // Got 100% aggro, return to original target
+                    _log.Write($"Hunt: Reached 100% aggro on add {_aggroRecoveryAddTarget}, returning to original target {_aggroRecoveryOriginalTarget}");
+                    DebugLog($"AGGRO: 100% on add, returning to {_aggroRecoveryOriginalTarget}");
+                    ReturnToOriginalTarget();
+                    return;
+                }
+
+                // Still need more aggro - ensure we're targeting the add and use aggro tools
+                int curTarget = 0;
+                try { curTarget = MQ.Query<int>("${Target.ID}"); } catch { }
+                if (curTarget != _aggroRecoveryAddTarget)
+                {
+                    TrySetTargetNonBlocking(_aggroRecoveryAddTarget);
+                }
+
+                UseAggroTools();
+                return;
+            }
+
+            // Not in recovery mode - check for new adds needing aggro
+            int newAdd = CheckForNewXTargetNeedingAggro();
+            if (newAdd > 0)
+            {
+                // Save current target and switch to the add
+                int currentTarget = 0;
+                try { currentTarget = MQ.Query<int>("${Target.ID}"); } catch { }
+
+                // Use TargetID if we have one, otherwise use current EQ target
+                _aggroRecoveryOriginalTarget = TargetID > 0 ? TargetID : currentTarget;
+                _aggroRecoveryAddTarget = newAdd;
+                _aggroRecoveryMode = true;
+
+                string addName = "";
+                try { addName = MQ.Query<string>($"${{Spawn[id {newAdd}].CleanName}}"); } catch { }
+
+                _log.Write($"Hunt: Switching to add {addName} ({newAdd}) to build aggro, will return to {_aggroRecoveryOriginalTarget}");
+                DebugLog($"AGGRO: Switching to add {addName} ({newAdd})");
+
+                // Target the add
+                TrySetTargetNonBlocking(newAdd);
+                UseAggroTools();
+            }
+        }
+
+        // Return to the original target after aggro recovery
+        private static void ReturnToOriginalTarget()
+        {
+            _aggroRecoveryMode = false;
+
+            // Check if original target is still valid
+            bool originalValid = false;
+            try
+            {
+                originalValid = _aggroRecoveryOriginalTarget > 0
+                                && MQ.Query<int>($"${{SpawnCount[id {_aggroRecoveryOriginalTarget}]}}") > 0
+                                && !MQ.Query<bool>($"${{Spawn[id {_aggroRecoveryOriginalTarget}].Type.Equal[Corpse]}}");
+            }
+            catch { }
+
+            if (originalValid)
+            {
+                TrySetTargetNonBlocking(_aggroRecoveryOriginalTarget);
+                DebugLog($"AGGRO: Returned to original target {_aggroRecoveryOriginalTarget}");
+            }
+            else
+            {
+                // Original target is gone, clear hunt target so we can acquire a new one
+                DebugLog($"AGGRO: Original target {_aggroRecoveryOriginalTarget} gone, will acquire new target");
+                if (TargetID == _aggroRecoveryOriginalTarget)
+                {
+                    TargetID = 0;
+                    TargetName = string.Empty;
+                }
+            }
+
+            _aggroRecoveryOriginalTarget = 0;
+            _aggroRecoveryAddTarget = 0;
         }
 
         private static void HandleWaitingForLoot()
@@ -1890,20 +2228,35 @@ namespace E3Core.Processors
                 HuntStateMachine.ReleaseNavigationControl("WaitingForLoot");
             }
 
-            // If loot wait has completed, resume previous activity without retargeting if possible
-            if (IsLootWaitComplete())
+            // Check if loot wait conditions are met
+            bool lootWaitConditionsMet = IsLootWaitComplete();
+
+            // If conditions just met, record the completion time for TLO update delay
+            if (lootWaitConditionsMet && _lootWaitCompleteAtMs == 0)
             {
-                _waitingForLoot = false;
-                _log.Write("Hunt: Loot wait completed - resuming");
-                // Prefer resuming navigation to existing TargetID if still valid
-                if (TargetID > 0 && IsValidCombatTarget(TargetID))
+                _lootWaitCompleteAtMs = Core.StopWatch.ElapsedMilliseconds;
+                _log.Write($"Hunt: Loot wait conditions met, waiting {_lootTloUpdateDelayMs}ms for SmartLoot TLO update");
+            }
+
+            // If loot wait has completed and TLO update delay has passed, resume previous activity
+            if (lootWaitConditionsMet && _lootWaitCompleteAtMs > 0)
+            {
+                long elapsedSinceCompletion = Core.StopWatch.ElapsedMilliseconds - _lootWaitCompleteAtMs;
+                if (elapsedSinceCompletion >= _lootTloUpdateDelayMs)
                 {
-                    HuntStateMachine.TransitionTo(HuntState.NavigatingToTarget, "Loot complete");
-                }
-                else
-                {
-                    _nextScanAt = 0; // allow immediate scanning
-                    HuntStateMachine.TransitionTo(HuntState.Scanning, "Loot complete");
+                    _waitingForLoot = false;
+                    _lootWaitCompleteAtMs = 0;
+                    _log.Write("Hunt: Loot wait completed - resuming");
+                    // Prefer resuming navigation to existing TargetID if still valid
+                    if (TargetID > 0 && IsValidCombatTarget(TargetID))
+                    {
+                        HuntStateMachine.TransitionTo(HuntState.NavigatingToTarget, "Loot complete");
+                    }
+                    else
+                    {
+                        _nextScanAt = 0; // allow immediate scanning
+                        HuntStateMachine.TransitionTo(HuntState.Scanning, "Loot complete");
+                    }
                 }
             }
         }
@@ -1919,23 +2272,6 @@ namespace E3Core.Processors
             if (CampOn && !HuntFromPlayer && !Movement.IsNavigating())
             {
                 e3util.TryMoveToLoc(CampX, CampY, CampZ, 10, 3000);
-            }
-        }
-
-        private static bool ShouldEnterLootWait()
-        {
-            try
-            {
-                bool smartLootLoaded = MQ.Query<bool>("${Plugin[MQ2SmartLoot]}");
-                if (!smartLootLoaded) return true;
-
-                string smartLootState = MQ.Query<string>("${SmartLoot.State}");
-                // Don't enter loot wait if SmartLoot still detects combat
-                return !smartLootState.Equals("CombatDetected", StringComparison.OrdinalIgnoreCase);
-            }
-            catch
-            {
-                return true; // Default to entering loot wait on error
             }
         }
 
@@ -1967,43 +2303,6 @@ namespace E3Core.Processors
             return (!smartLootActive && timeDelayPassed) || (!smartLootActive && fallbackTimeout);
         }
 
-        private static string GetLootWaitReason()
-        {
-            long elapsed = Core.StopWatch.ElapsedMilliseconds - _lootWaitStartMs;
-            int lootWaitTime = E3.GeneralSettings.Loot_TimeToWaitAfterAssist;
-            int minWait = Math.Max(_lootMinWaitMs, Math.Max(0, lootWaitTime));
-            bool timeDelayPassed = elapsed >= minWait;
-
-            try
-            {
-                bool smartLootLoaded = MQ.Query<bool>("${Plugin[MQ2SmartLoot]}");
-                if (smartLootLoaded)
-                {
-                    string smartLootState = MQ.Query<string>("${SmartLoot.State}");
-                    bool isProcessing = false;
-                    bool needsDecision = false;
-                    bool lootWindowOpen = false;
-                    try { isProcessing = MQ.Query<bool>("${SmartLoot.IsProcessing}"); } catch { }
-                    try { needsDecision = MQ.Query<bool>("${SmartLoot.NeedsDecision}"); } catch { }
-                    try { lootWindowOpen = MQ.Query<bool>("${SmartLoot.LootWindowOpen}"); } catch { }
-
-                    bool smartLootIdle = smartLootState.Equals("Idle", StringComparison.OrdinalIgnoreCase) && !isProcessing && !needsDecision && !lootWindowOpen;
-
-                    if (!smartLootIdle)
-                    {
-                        string extra = needsDecision ? ", NeedsDecision" : (lootWindowOpen ? ", LootWindowOpen" : (isProcessing ? ", Processing" : ""));
-                        return $"Waiting for SmartLoot ({smartLootState}{extra})";
-                    }
-                }
-            }
-            catch { }
-
-            if (!timeDelayPassed)
-                return $"Waiting for loot delay ({elapsed}ms/{minWait}ms)";
-
-            return "Waiting for loot";
-        }
-
         // Debounced SmartLoot activity detection for nav preemption
         private static long _smartLootFirstActiveAt = 0;
         private static string _smartLootLastState = string.Empty;
@@ -2011,62 +2310,6 @@ namespace E3Core.Processors
         // Loot-wait hysteresis to allow scanning between multiple corpses
         private static long _smartLootLastActiveSignalAt = 0;
         private static readonly int _smartLootIdleGraceMs = 500;
-
-        // Use this to decide if SmartLoot should preempt navigation (avoid thrash)
-        private static bool IsSmartLootActiveForNav()
-        {
-            try
-            {
-                bool smartLootLoaded = MQ.Query<bool>("${Plugin[MQ2SmartLoot]}");
-                if (!smartLootLoaded) return false;
-
-                string state = MQ.Query<string>("${SmartLoot.State}");
-                bool needsDecision = false;
-                bool lootWindowOpen = false;
-                try { needsDecision = MQ.Query<bool>("${SmartLoot.NeedsDecision}"); } catch { }
-                try { lootWindowOpen = MQ.Query<bool>("${SmartLoot.LootWindowOpen}"); } catch { }
-
-                // Treat only these as nav-preempting states
-                bool stateIsPreempting = !string.IsNullOrEmpty(state) && (
-                    state.Equals("OpeningLootWindow", StringComparison.OrdinalIgnoreCase) ||
-                    state.Equals("ProcessingItems", StringComparison.OrdinalIgnoreCase) ||
-                    state.Equals("WaitingForPendingDecision", StringComparison.OrdinalIgnoreCase) ||
-                    state.Equals("CleaningUpCorpse", StringComparison.OrdinalIgnoreCase)
-                );
-
-                // Explicitly consider these benign for navigation
-                bool stateIsBenign = !string.IsNullOrEmpty(state) && (
-                    state.Equals("FindingCorpse", StringComparison.OrdinalIgnoreCase) ||
-                    state.Equals("NavigatingToCorpse", StringComparison.OrdinalIgnoreCase) ||
-                    state.Equals("Scan", StringComparison.OrdinalIgnoreCase) ||
-                    state.Equals("Scanning", StringComparison.OrdinalIgnoreCase)
-                );
-
-                if (!string.IsNullOrEmpty(state) && state.Equals("CombatDetected", StringComparison.OrdinalIgnoreCase))
-                    return false; // do not preempt nav due to combat detection
-
-                bool rawActive = lootWindowOpen || needsDecision || stateIsPreempting;
-
-                long now = Core.StopWatch.ElapsedMilliseconds;
-                if (rawActive && !stateIsBenign)
-                {
-                    if (_smartLootFirstActiveAt == 0 || !string.Equals(_smartLootLastState, state, StringComparison.OrdinalIgnoreCase))
-                    {
-                        _smartLootFirstActiveAt = now;
-                        _smartLootLastState = state ?? string.Empty;
-                    }
-                    // Require sustained active state to avoid thrashing due to periodic scans
-                    return (now - _smartLootFirstActiveAt) >= _smartLootDebounceMs;
-                }
-                else
-                {
-                    _smartLootFirstActiveAt = 0;
-                    _smartLootLastState = state ?? string.Empty;
-                    return false;
-                }
-            }
-            catch { return false; }
-        }
 
         // Use this for loot-wait gating; keep waiting through transitions like "FindingCorpse"
         private static bool IsSmartLootActiveForLootWait()
@@ -2669,7 +2912,7 @@ namespace E3Core.Processors
 
                 if (CanNavNow(out var whyNot))
                 {
-                    MQ.Cmd($"/nav id {spawnId}");
+                    MQ.Cmd($"/nav id {spawnId} log=off");
                     _nextNavAt = Core.StopWatch.ElapsedMilliseconds + _navCooldownMs;
                 }
                 else
@@ -2683,6 +2926,60 @@ namespace E3Core.Processors
             {
                 _log.Write($"Hunt: Error starting navigation to {spawnId}: {ex.Message}");
                 DebugLog($"NAV: error starting nav to {spawnId}: {ex.Message}");
+            }
+        }
+
+        // Cache path length to the active target and optionally stop nav when we're already close
+        private static bool UpdateNavPathProximity(bool allowStopNav, out double navPathRemaining)
+        {
+            navPathRemaining = 0;
+            bool navPathShort = false;
+
+            if (TargetID <= 0)
+            {
+                if (_navCloseHoldTargetID != 0)
+                    _navCloseHoldTargetID = 0;
+                return false;
+            }
+
+            try
+            {
+                navPathRemaining = MQ.Query<double>($"${{Navigation.PathLength[id {TargetID}]}}" );
+                bool pathExists = navPathRemaining > 0;
+                navPathShort = pathExists && navPathRemaining < _navStopPathThreshold;
+            }
+            catch
+            {
+                navPathShort = false;
+            }
+
+            if (_navCloseHoldTargetID != 0 && (_navCloseHoldTargetID != TargetID || !navPathShort))
+            {
+                _navCloseHoldTargetID = 0;
+            }
+
+            if (allowStopNav && navPathShort)
+            {
+                TryStopNavNearTarget(navPathRemaining);
+            }
+
+            return navPathShort;
+        }
+
+        private static void TryStopNavNearTarget(double navPathRemaining)
+        {
+            if (!HuntStateMachine.IsNavigationOwned) return;
+
+            bool navActive = false;
+            try { navActive = MQ.Query<bool>("${Navigation.Active}"); } catch { }
+            if (!navActive) return;
+
+            if (_navTargetID == TargetID && TargetID > 0)
+            {
+                try { MQ.Cmd("/nav stop"); } catch { }
+                _navTargetID = 0;
+                _navCloseHoldTargetID = TargetID;
+                DebugLog($"NAV: stop near target pathLen={navPathRemaining:0.0}");
             }
         }
 
@@ -2877,59 +3174,6 @@ namespace E3Core.Processors
                 }
             }
             catch { }
-        }
-
-        // Helper method to check if any connected peers are in a different zone or dead
-        // Removed duplicate peer-zone status helper; logic lives in DetermineTargetState()
-
-        // Helper method to check if a peer is in the same zone as the current character
-        private static bool IsPeerInSameZone(string peerName)
-        {
-            try
-            {
-                if (string.IsNullOrWhiteSpace(peerName))
-                    return false;
-
-                // Skip self-check
-                if (string.Equals(peerName, E3.CurrentName, StringComparison.OrdinalIgnoreCase))
-                    return true;
-
-                string currentZone = GetCurrentZone();
-                string peerZone = E3.Bots.Query(peerName, "${Zone.ShortName}");
-                
-                // If we can't determine peer zone, assume they're not in the same zone
-                if (string.IsNullOrEmpty(peerZone) || peerZone.Equals("NULL", StringComparison.OrdinalIgnoreCase))
-                    return false;
-
-                return string.Equals(peerZone, currentZone, StringComparison.OrdinalIgnoreCase);
-            }
-            catch (Exception ex)
-            {
-                _log.Write($"Hunt: Error checking if peer {peerName} is in same zone: {ex.Message}");
-                return false; // On error, assume they're not in the same zone for safety
-            }
-        }
-
-        // Helper method to check if a peer is dead
-        private static bool IsPeerDead(string peerName)
-        {
-            try
-            {
-                if (string.IsNullOrWhiteSpace(peerName))
-                    return false;
-
-                // Skip self-check
-                if (string.Equals(peerName, E3.CurrentName, StringComparison.OrdinalIgnoreCase))
-                    return E3._amIDead;
-
-                string peerDead = E3.Bots.Query(peerName, "${Me.Dead}");
-                return string.Equals(peerDead, "TRUE", StringComparison.OrdinalIgnoreCase);
-            }
-            catch (Exception ex)
-            {
-                _log.Write($"Hunt: Error checking if peer {peerName} is dead: {ex.Message}");
-                return false; // On error, assume they're not dead
-            }
         }
 
         // Enhanced target validation function
