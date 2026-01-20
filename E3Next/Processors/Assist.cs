@@ -52,11 +52,20 @@ namespace E3Core.Processors
 		[ExposedData("Assist", "AssistIsEnraged")]
 		private static bool _assistIsEnraged = false;
         private static Dictionary<string, Action> _stickSwitch;
-        private static HashSet<Int32> _offAssistIgnore = new HashSet<Int32>();
+		private static HashSet<Int32> _offAssistIgnore = new HashSet<Int32>();
+		private const string AssistTypeManual = "Manual";
 		//private static Data.Spell _divineStun = new Data.Spell("Divine Stun");
 		//private static Data.Spell _terrorOfDiscord = new Data.Spell("Terror of Discord");
 		[ExposedData("Assist", "TankTypes")]
 		private static List<string> _tankTypes = new List<string>() { "WAR", "PAL", "SHD" };
+		private static bool AssistCommandsDisabled()
+		{
+			return IsManualAssistType(E3.CharacterSettings.Assist_Type);
+		}
+		private static bool IsManualAssistType(string assistType)
+		{
+			return String.Equals(assistType, AssistTypeManual, StringComparison.OrdinalIgnoreCase);
+		}
 
         /// <summary>
         /// Initializes this instance.
@@ -94,25 +103,34 @@ namespace E3Core.Processors
 
 			}
 			if (Basics.InCombat())
-            {
-                CurrentMaxAggro = e3util.GetXtargetMaxAggro();
-                if(CurrentMaxAggro==0)
-                {
-                    CurrentMinAggro = 0;
-                }
-                else
-                {
+			{
+				CurrentMaxAggro = e3util.GetXtargetMaxAggro();
+				if(CurrentMaxAggro==0)
+				{
+					CurrentMinAggro = 0;
+				}
+				else
+				{
 					CurrentMinAggro = e3util.GetXtargetMinAggro();
 				}
 			}
-            else
-            {
-                CurrentMaxAggro = 0;
-                CurrentMinAggro = 0;
-            }
+			else
+			{
+				CurrentMaxAggro = 0;
+				CurrentMinAggro = 0;
+			}
 
-            CheckAssistStatus();
-            ProcessCombat();
+			if (AssistCommandsDisabled())
+			{
+				if (IsAssisting)
+				{
+					AssistOff();
+				}
+				return;
+			}
+
+			CheckAssistStatus();
+			ProcessCombat();
         }
 
         /// <summary>
@@ -565,8 +583,14 @@ namespace E3Core.Processors
         /// Turns assist on.
         /// </summary>
         /// <param name="mobID">The mob identifier.</param>
-        public static void AssistOn(Int32 mobID, Int32 zoneId)
-        {
+		public static void AssistOn(Int32 mobID, Int32 zoneId)
+		{
+
+			if (AssistCommandsDisabled())
+			{
+				AllowControl = false;
+				return;
+			}
 
             if (zoneId != Zoning.CurrentZone.Id) return;
 			//clear in case its not reset by other means
@@ -842,13 +866,20 @@ namespace E3Core.Processors
         }
 
 
-        private static void RegisterEvents()
-        {
-           EventProcessor.RegisterCommand("/assistme", (x) =>
-           {
-                //clear in case its not reset by other means
-                //or you want to attack in enrage
-                _assistIsEnraged = false;
+		private static void RegisterEvents()
+		{
+		   EventProcessor.RegisterCommand("/assistme", (x) =>
+		   {
+				//clear in case its not reset by other means
+				//or you want to attack in enrage
+				_assistIsEnraged = false;
+			   bool assistDisabled = AssistCommandsDisabled();
+
+			   if (Basics.IsPaused)
+			   {
+				   AssistOff();
+				   return;
+			   }
 
 			   //being told to asssist, clear out ignored targets from pullers.
 			   if(Heals.IgnoreHealTargets.Count>0)
@@ -864,50 +895,59 @@ namespace E3Core.Processors
                    x.args.Remove("/ignoreme");
                }
                //Rez.Reset();
-               if (x.args.Count == 0)
-               {
+			   if (x.args.Count == 0)
+			   {
 
-                   Int32 targetID = MQ.Query<Int32>("${Target.ID}");
+				   Int32 targetID = MQ.Query<Int32>("${Target.ID}");
 
-                   if (targetID == E3.CurrentId)
-                   {
-                       E3.Bots.Broadcast("I cannot assist on myself.");
-                       return;
-                   }
-                   if(!ignoreme)
-                   {
-                       if (!e3util.FilterMe(x))
-                       {
-                           if (targetID != AssistTargetID)
-                           {
-                               AssistOff();
-                              
-                           }
-						   AllowControl = true;
-						   AssistOn(targetID, Zoning.CurrentZone.Id);
-					   }
-                   }
-                   else
-                   {
-                       //we are asking to ignore ourself, but might want to send out our pet still
-                       if (MQ.Query<Int32>("${Me.Pet.ID}") > 0)
-                       {
-                           MQ.Cmd($"/pet attack {targetID}");
-						  
-					   }
-					   if (e3util.IsEQLive())
+				   if (targetID == E3.CurrentId)
+				   {
+					   E3.Bots.Broadcast("I cannot assist on myself.");
+					   return;
+				   }
+				   if(!ignoreme)
+				   {
+					   if (!e3util.FilterMe(x))
 					   {
-						   MQ.Cmd("/pet swarm");
+						   if (!assistDisabled)
+						   {
+							   if (targetID != AssistTargetID)
+							   {
+								   AssistOff();
+							   }
+							   AllowControl = true;
+							   AssistOn(targetID, Zoning.CurrentZone.Id);
+						   }
 					   }
 				   }
-                   E3.Bots.BroadcastCommandToGroup($"/assistme {targetID} {Zoning.CurrentZone.Id}", x);
+				   else
+				   {
+					   //we are asking to ignore ourself, but might want to send out our pet still
+					   if (!assistDisabled)
+					   {
+						   if (MQ.Query<Int32>("${Me.Pet.ID}") > 0)
+						   {
+							   MQ.Cmd($"/pet attack {targetID}");
+						   }
+						   if (e3util.IsEQLive())
+						   {
+							   MQ.Cmd("/pet swarm");
+						   }
+					   }
+				   }
+				   E3.Bots.BroadcastCommandToGroup($"/assistme {targetID} {Zoning.CurrentZone.Id}", x);
 
 
-               }
-               else if (!e3util.FilterMe(x))
-               {
-                   Int32 mobid;
-                   Int32 zoneid;
+			   }
+			   else if (!e3util.FilterMe(x))
+			   {
+				   if (assistDisabled)
+				   {
+					   MQ.Write($"\\arAssist Type is set to {AssistTypeManual}. Ignoring /assistme.");
+					   return;
+				   }
+				   Int32 mobid;
+				   Int32 zoneid;
 
                    if (Int32.TryParse(x.args[0], out mobid))
                    {
@@ -946,7 +986,7 @@ namespace E3Core.Processors
                 {
                     string user = x.args[0];
                     string assisttype = x.args[1];
-                    if (_meleeTypes.Contains(assisttype, StringComparer.OrdinalIgnoreCase) || _rangeTypes.Contains(assisttype, StringComparer.OrdinalIgnoreCase))
+				if (_meleeTypes.Contains(assisttype, StringComparer.OrdinalIgnoreCase) || _rangeTypes.Contains(assisttype, StringComparer.OrdinalIgnoreCase) || IsManualAssistType(assisttype))
                     {
                         E3.Bots.BroadcastCommandToPerson(user, $"/assisttype {assisttype}");
 
@@ -955,7 +995,7 @@ namespace E3Core.Processors
                 else if (x.args.Count == 1)
                 {
                     string assisttype = x.args[0];
-                    if (_meleeTypes.Contains(assisttype, StringComparer.OrdinalIgnoreCase) || _rangeTypes.Contains(assisttype, StringComparer.OrdinalIgnoreCase) || assisttype.ToLower()=="off")
+				if (_meleeTypes.Contains(assisttype, StringComparer.OrdinalIgnoreCase) || _rangeTypes.Contains(assisttype, StringComparer.OrdinalIgnoreCase) || assisttype.ToLower()=="off" || IsManualAssistType(assisttype))
                     {
                         E3.CharacterSettings.Assist_Type = assisttype;
                         E3.Bots.Broadcast("\agChanging assist type to :\ao" + assisttype);

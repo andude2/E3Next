@@ -1377,6 +1377,8 @@ namespace E3Core.Processors
         {
             if(on && IsPaused==false)
             {
+                //drop any active assist state so we don't stay in combat while paused
+                Assist.AssistOff();
 				IsPaused = true;
 				E3.Bots.Broadcast("\arPAUSING E3!");
 			

@@ -226,7 +226,8 @@ namespace E3Core.Processors
                             }
                             MQ.Delay(500);
 
-							if (!String.Equals(E3.CharacterSettings.Assist_Type, "Off", StringComparison.OrdinalIgnoreCase))
+							if (!String.Equals(E3.CharacterSettings.Assist_Type, "Off", StringComparison.OrdinalIgnoreCase) &&
+							    !String.Equals(E3.CharacterSettings.Assist_Type, "Manual", StringComparison.OrdinalIgnoreCase))
 							{
 								MQ.Cmd("/attack on");
 							}
