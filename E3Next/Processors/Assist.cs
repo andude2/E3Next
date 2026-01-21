@@ -943,7 +943,7 @@ namespace E3Core.Processors
 			   {
 				   if (assistDisabled)
 				   {
-					   MQ.Write($"\\arAssist Type is set to {AssistTypeManual}. Ignoring /assistme.");
+					   MQ.Write($"\arAssist Type is set to {AssistTypeManual}. Ignoring /assistme.");
 					   return;
 				   }
 				   Int32 mobid;

@@ -11,6 +11,8 @@ namespace E3Core.Data
     {
         private const char WireFieldSeparator = '|';
         private const char WireEntrySeparator = ';';
+        private const char WireObjectiveSeparator = '~';
+        private const char WireObjectiveFieldSeparator = '^';
 
         public const int MaxTaskSlots = 30;
         public const int MaxObjectiveSlots = 20;
@@ -52,6 +54,23 @@ namespace E3Core.Data
                 builder.Append(WireFieldSeparator).Append(Encode(task.Type));
                 builder.Append(WireFieldSeparator).Append(task.IsComplete ? 1 : 0);
                 builder.Append(WireFieldSeparator).Append(Encode(task.TimerDisplay));
+
+                // Serialize objectives
+                builder.Append(WireFieldSeparator);
+                for (int i = 0; i < task.Objectives.Count; i++)
+                {
+                    if (i > 0)
+                    {
+                        builder.Append(WireObjectiveSeparator);
+                    }
+
+                    var obj = task.Objectives[i];
+                    builder.Append(obj.Index);
+                    builder.Append(WireObjectiveFieldSeparator).Append(Encode(obj.Instruction));
+                    builder.Append(WireObjectiveFieldSeparator).Append(Encode(obj.Status));
+                    builder.Append(WireObjectiveFieldSeparator).Append(Encode(obj.Zone));
+                    builder.Append(WireObjectiveFieldSeparator).Append(obj.Optional ? 1 : 0);
+                }
             }
 
             return builder.ToString();
@@ -81,6 +100,28 @@ namespace E3Core.Data
                     IsComplete = ParseInt(fields[6]) == 1,
                     TimerDisplay = Decode(fields[7])
                 };
+
+                // Parse objectives if present (field index 8)
+                if (fields.Length > 8 && !string.IsNullOrEmpty(fields[8]))
+                {
+                    var objectiveEntries = fields[8].Split(WireObjectiveSeparator);
+                    foreach (var objEntry in objectiveEntries)
+                    {
+                        if (string.IsNullOrWhiteSpace(objEntry)) continue;
+
+                        var objFields = objEntry.Split(WireObjectiveFieldSeparator);
+                        if (objFields.Length < 5) continue;
+
+                        summary.Objectives.Add(new TaskWireObjective
+                        {
+                            Index = ParseInt(objFields[0]),
+                            Instruction = Decode(objFields[1]),
+                            Status = Decode(objFields[2]),
+                            Zone = Decode(objFields[3]),
+                            Optional = ParseInt(objFields[4]) == 1
+                        });
+                    }
+                }
 
                 results.Add(summary);
             }
@@ -235,5 +276,17 @@ namespace E3Core.Data
         public string Type { get; set; } = string.Empty;
         public bool IsComplete { get; set; }
         public string TimerDisplay { get; set; } = string.Empty;
+        public List<TaskWireObjective> Objectives { get; } = new List<TaskWireObjective>();
+    }
+
+    public class TaskWireObjective
+    {
+        public int Index { get; set; }
+        public string Instruction { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public string Zone { get; set; } = string.Empty;
+        public bool Optional { get; set; }
+
+        public bool IsComplete => string.Equals(Status, "Done", StringComparison.OrdinalIgnoreCase);
     }
 }
